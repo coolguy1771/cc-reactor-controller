@@ -1,0 +1,1 @@
+shell.run("/watchdog.lua")
