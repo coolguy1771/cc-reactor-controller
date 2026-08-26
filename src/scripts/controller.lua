@@ -191,8 +191,7 @@ local function clamp01(value)
     return value
 end
 
--- Coupled steam relief: high casing or a steam tank above bufferMax drives BOTH more turbine
--- intake and more rod insertion so production and consumption move together.
+-- Steam-tank relief only: when the tank exceeds bufferMax, insert rods (no casing coupling).
 ---@param s OverallStats
 function updateSteamCoordination(s)
     local groups = s.steamGroups or {}
@@ -202,35 +201,14 @@ function updateSteamCoordination(s)
     end
 
     local bufferMax = CONTROL_CONFIG.bufferMax or 70
-    local targetCase = CONTROL_CONFIG.targetCasingTemperature or 1800
-    local caseSpan = CONTROL_CONFIG.casingReliefSpan or 400
-    local maxCaseByGroup = {}
-
-    for _, reactor in pairs(_G.reactors) do
-        if reactor.activelyCooled then
-            local gid = reactor.groupId or "default"
-            local caseTemp = reactor.averageCaseTemp or 0
-            maxCaseByGroup[gid] = math.max(maxCaseByGroup[gid] or 0, caseTemp)
-        end
-    end
-
-    for gid, g in pairs(groups) do
+    for _, g in pairs(groups) do
         local steamPct = (g.steamCapacity > 0) and (g.storedSteam / g.steamCapacity * 100) or 0
         g.steamBufferPct = steamPct
-
-        local steamPressure = 0
         if steamPct > bufferMax and bufferMax < 100 then
-            steamPressure = clamp01((steamPct - bufferMax) / (100 - bufferMax))
+            g.pressureRelief = clamp01((steamPct - bufferMax) / (100 - bufferMax))
+        else
+            g.pressureRelief = 0
         end
-
-        local maxCase = maxCaseByGroup[gid] or 0
-        g.maxCasingTemp = maxCase
-        local casePressure = 0
-        if caseSpan > 0 and maxCase > targetCase then
-            casePressure = clamp01((maxCase - targetCase) / caseSpan)
-        end
-
-        g.pressureRelief = math.max(steamPressure, casePressure)
     end
 end
 
@@ -336,11 +314,12 @@ function _G.getEntitySetting(entityID, key)
     return CONTROL_CONFIG[key]
 end
 
--- idleRPM must stay well under safeRPM so normal steering never brushes the governor.
+-- rpmMin must stay below rpmMax so the band controller has room to steer.
 local IDLE_RPM_MARGIN = 100
 local IDLE_RPM_FLOOR = 100
 function _G.clampIdleRPM(rpm)
-    return math.max(IDLE_RPM_FLOOR, math.min(rpm, CONTROL_CONFIG.safeRPM - IDLE_RPM_MARGIN))
+    local rpmMax = CONTROL_CONFIG.rpmMax or CONTROL_CONFIG.ceilingRPM or 2000
+    return math.max(IDLE_RPM_FLOOR, math.min(rpm, rpmMax - IDLE_RPM_MARGIN))
 end
 
 function _G.toggleFlywheel()
@@ -351,7 +330,9 @@ end
 -- UI adjusters (monitor settings row). Each validates, persists, and re-syncs globals.
 
 function _G.adjustIdleRPM(delta)
-    CONTROL_CONFIG.idleRPM = _G.clampIdleRPM(CONTROL_CONFIG.idleRPM + delta)
+    local newMin = _G.clampIdleRPM((CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM) + delta)
+    CONTROL_CONFIG.rpmMin = newMin
+    CONTROL_CONFIG.idleRPM = newMin
     ConfigUtil.writeConfig("control")
 end
 

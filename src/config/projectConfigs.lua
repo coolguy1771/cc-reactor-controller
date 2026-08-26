@@ -29,26 +29,19 @@ _G.CONTROL_CONFIG = {
     expectedPeripherals = {},
 
     -- Safety interlocks. Set a numeric threshold to 0 to disable only that check.
-    -- Casing often sits at 1000-1800C during normal steam operation; 1000 was too low.
-    maxFuelTemperature = 2500,
-    maxCasingTemperature = 2200,
+    maxFuelTemperature = 0,
+    maxCasingTemperature = 0,
     maxSteamBufferPct = 100,
     -- Skip thermal/steam/turbine-availability SCRAMs briefly after entering RUNNING.
     safetyStartupGraceSeconds = 10,
     -- When false, SCRAM reset returns to READY and waits for operator (avoids temp re-trip loop).
     autoStartAfterScramReset = false,
-
-    -- Steam-network coordination: when casing is hot or the steam tank is above bufferMax,
-    -- turbines pull harder AND reactor rods insert together (both sides of the loop).
-    steamCoordination = true,
-    targetCasingTemperature = 1800,   -- relief ramps from here up to +casingReliefSpan
-    casingReliefSpan = 400,
-    steamReliefRodBias = 25,            -- max extra rod insertion (%) at full relief
-    steamReliefMinFlowPct = 0.5,        -- min steam cap (% of turbine max) at full relief
-    steamReliefRpmBoostPct = 0.4,       -- RPM target boost (% of safe-idle span) at full relief
-    steamReliefForceCoilsAt = 0.65,     -- force coils on above this relief level (0-1)
     overspeedScramRPM = 2000,
     scramTurbineSteam = 0,
+
+    -- Optional: when steam tank exceeds bufferMax, insert rods (no casing-temp coupling).
+    steamCoordination = false,
+    steamReliefRodBias = 25,
 
     -- Event/alarm/history retention (kept small for tight CC computer disks).
     eventLogMaxBytes = 32768,
@@ -80,9 +73,11 @@ _G.CONTROL_CONFIG = {
     bufferMin = 30,
     bufferMax = 70,
 
-    -- Turbine speed governor (RPM).
-    idleRPM = 1800,     -- steam PID target; efficiency sweet spot, held in every mode
-    safeRPM = 1950,     -- soft brake: clamp steam hard at/above this
+    -- Turbine RPM band: steam input is modulated to keep RPM inside [rpmMin, rpmMax].
+    rpmMin = 1800,
+    rpmMax = 2000,
+    idleRPM = 1800,     -- legacy alias for rpmMin (monitor RPM-/+ adjusts this)
+    safeRPM = 1990,     -- soft brake: clamp steam hard at/above this
     ceilingRPM = 2000,  -- hard cut: steam -> 0 and coils engaged (brake) at/above this
 
     -- Per-turbine demand hysteresis, read from each turbine's OWN internal RF buffer (%).
@@ -106,7 +101,7 @@ _G.CONTROL_CONFIG = {
     -- Per-entity overrides of the global settings above, keyed by peripheral id, e.g.
     --   entityOverrides = { ["BigReactors-Turbine_2"] = { idleRPM = 900 } }
     -- Reactors honor: bufferMin, bufferMax.
-    -- Turbines honor: coilsOnBelowPct, coilsOffAbovePct, idleRPM.
+    -- Turbines honor: coilsOnBelowPct, coilsOffAbovePct, rpmMin, rpmMax, idleRPM.
     entityOverrides = {},
 
     -- Steam network groups: which reactors feed which turbines. Each group runs its own

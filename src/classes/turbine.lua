@@ -1,14 +1,10 @@
 -- Turbine class (Extreme Reactors 2 "BigReactors-Turbine" peripheral, MC 1.20.1 Modernized API).
 --
 -- Control model (see README):
---   * Steam throttle (setFluidFlowRateMax) is a PI controller whose ONLY job is to hold idleRPM.
+--   * Steam throttle (setFluidFlowRateMax) is a PI controller holding RPM inside [rpmMin, rpmMax].
 --   * Coils (setInductorEngaged) are the power tap: engaged = generate + brake, disengaged = freewheel.
 --     Driven by this turbine's OWN internal RF buffer % with hysteresis.
---   * A safety governor overrides both above safeRPM/ceilingRPM so RPM can never cross the ceiling.
---
--- Because the steam PI always targets idleRPM, flipping coils ON makes "hold 1800" require lots of
--- steam (=> lots of power); coils OFF makes it require almost none (=> idle, no waste). One law,
--- every regime (cold spin-up, idle standby, full generation) handled by the same three steps.
+--   * A safety governor overrides both above safeRPM/ceilingRPM so RPM can never cross rpmMax.
 
 local function clamp(value, low, high)
     if value < low then return low end
@@ -16,10 +12,35 @@ local function clamp(value, low, high)
     return value
 end
 
-local function steamPressureRelief(turbine, config)
-    if config.steamCoordination == false or not turbine.groupId then return 0 end
-    local group = _G.overallStats.steamGroups and _G.overallStats.steamGroups[turbine.groupId]
-    return group and group.pressureRelief or 0
+local function entityRpmMin(config, turbineId)
+    local o = config.entityOverrides and config.entityOverrides[turbineId]
+    if o and o.rpmMin ~= nil then return o.rpmMin end
+    if o and o.idleRPM ~= nil then return o.idleRPM end
+    return config.rpmMin or config.idleRPM or 1800
+end
+
+local function entityRpmMax(config, turbineId)
+    local o = config.entityOverrides and config.entityOverrides[turbineId]
+    if o and o.rpmMax ~= nil then return o.rpmMax end
+    return config.rpmMax or config.ceilingRPM or 2000
+end
+
+local function rpmLimits(config, turbineId)
+    local rpmMin = entityRpmMin(config, turbineId)
+    local rpmMax = entityRpmMax(config, turbineId)
+    if rpmMax < rpmMin then rpmMax = rpmMin end
+    return rpmMin, rpmMax
+end
+
+-- PI error: below band -> push up to rpmMin; above band -> pull down; inside -> hold midpoint.
+local function rpmBandError(avgRpm, rpmMin, rpmMax)
+    if avgRpm < rpmMin then
+        return rpmMin - avgRpm
+    end
+    if avgRpm > rpmMax then
+        return rpmMax - avgRpm
+    end
+    return (rpmMin + rpmMax) / 2 - avgRpm
 end
 
 ---@class Turbine
@@ -144,8 +165,9 @@ local Turbine = {
         -- self.desiredCoils is the persisted demand decision (valid on governor-only ticks too).
         -- DANGER: high/uncapped RPM can explode turbines in-game.
         local flywheelArmedIdle = (config.flywheelMode == true) and (self.desiredCoils == false)
-        local ceiling = config.ceilingRPM
-        local safe = config.safeRPM
+        local rpmMin, rpmMax = rpmLimits(config, self.id)
+        local ceiling = config.rpmMax or config.ceilingRPM or rpmMax
+        local safe = config.safeRPM or math.max(rpmMin, ceiling - 10)
         if flywheelArmedIdle then
             local cap = config.flywheelCeilingRPM or 0
             if cap > 0 then
@@ -175,10 +197,9 @@ local Turbine = {
             return
         end
 
-        -- Per-turbine overrides (entityOverrides), validated so idleRPM stays under safeRPM.
+        -- Per-turbine overrides (entityOverrides).
         local coilsOnBelow = getEntitySetting(self.id, "coilsOnBelowPct")
         local coilsOffAbove = getEntitySetting(self.id, "coilsOffAbovePct")
-        local idleTarget = clampIdleRPM(getEntitySetting(self.id, "idleRPM"))
 
         -- 2) COIL DEMAND -- hysteresis on this turbine's own internal buffer.
         local bufPct = self:bufferPct()
@@ -186,10 +207,6 @@ local Turbine = {
             self.desiredCoils = true
         elseif bufPct >= coilsOffAbove then
             self.desiredCoils = false
-        end
-        local relief = steamPressureRelief(self, config)
-        if relief >= (config.steamReliefForceCoilsAt or 0.65) then
-            self.desiredCoils = true
         end
         self:writeCoils(self.desiredCoils)
 
@@ -203,22 +220,14 @@ local Turbine = {
             return
         end
 
-        -- 3b) STEAM PI -- hold idleTarget (peak-efficiency 1800, per-turbine override honored).
-        --    Integral carries the mode's steady-state steam. Errors inside the deadband are
-        --    ignored (server-lag reduction: fewer writes).
-        --    Steam coordination raises the RPM target and floor when casing/steam tank is hot.
-        local rpmSpan = math.max(0, safe - idleTarget)
-        idleTarget = idleTarget + relief * (config.steamReliefRpmBoostPct or 0.4) * rpmSpan
-        idleTarget = math.min(idleTarget, safe - 50)
-
-        local err = idleTarget - avgRpm
+        -- 3b) STEAM PI -- modulate flow cap to hold RPM inside [rpmMin, rpmMax].
+        local err = rpmBandError(avgRpm, rpmMin, rpmMax)
         if math.abs(err) < (config.rpmDeadband or 0) then
             err = 0
         end
         self.pid.integral = clamp(self.pid.integral + config.turbineKi * err, 0, self.flowMaxMax)
         local output = clamp(self.pid.integral + config.turbineKp * err, 0, self.flowMaxMax)
-        local minFlow = relief * (config.steamReliefMinFlowPct or 0.5) * self.flowMaxMax
-        self:writeSteam(math.max(output, minFlow))
+        self:writeSteam(output)
     end,
 }
 

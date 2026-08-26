@@ -285,9 +285,16 @@ check(started and SafetyManager.state() == "RUNNING", "operator start enters RUN
 --endregion
 --region run phases
 
-local IDLE, SAFE, CEILING = CONTROL_CONFIG.idleRPM, CONTROL_CONFIG.safeRPM, CONTROL_CONFIG.ceilingRPM
+local RPM_MIN = CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM
+local RPM_MAX = CONTROL_CONFIG.rpmMax or CONTROL_CONFIG.ceilingRPM
+local RPM_MID = (RPM_MIN + RPM_MAX) / 2
+local SAFE, CEILING = CONTROL_CONFIG.safeRPM, CONTROL_CONFIG.ceilingRPM
 local tick = 0
 local ceilingViolations = 0
+
+local function inRpmBand(rpm)
+    return rpm >= RPM_MIN - 50 and rpm <= RPM_MAX + 50
+end
 
 local function runTicks(n, sample)
     for _ = 1, n do
@@ -324,9 +331,9 @@ check(allGeneratedA, "phase A: every turbine generated under load")
 
 local nearTarget = true
 for _, t in ipairs(world.fakeTurbines) do
-    nearTarget = nearTarget and math.abs(t.rpm - IDLE) < 250
+    nearTarget = nearTarget and inRpmBand(t.rpm)
 end
-check(nearTarget, "phase A: turbines near 1800 RPM under load")
+check(nearTarget, "phase A: turbines hold RPM inside configured band under load")
 
 -- Phase B: zero draw -> buffers fill, coils must disengage, steam production must throttle.
 -- Long enough for the steam tank to finish band-seeking so the tail is pure load-following.
@@ -353,9 +360,9 @@ check(bCoilTicks == 0, "phase B: coils disengaged when grid full (idle @1800)")
 
 local idleNearTarget = true
 for _, t in ipairs(world.fakeTurbines) do
-    idleNearTarget = idleNearTarget and math.abs(t.rpm - IDLE) < 250
+    idleNearTarget = idleNearTarget and inRpmBand(t.rpm)
 end
-check(idleNearTarget, "phase B: turbines hold ~1800 RPM while idle")
+check(idleNearTarget, "phase B: turbines hold RPM inside configured band while idle")
 
 local avgProdB = bProdSum / math.max(1, bSamples)
 local avgConsB = bConsSum / math.max(1, bSamples)
@@ -433,13 +440,15 @@ end
 
 --region planned features: reserve bands, responsiveness throttle, configurable idleRPM
 
--- idleRPM validation: UI adjuster clamps to [floor, safeRPM - margin].
-local savedIdle = CONTROL_CONFIG.idleRPM
+-- rpmMin validation: UI adjuster clamps to [floor, rpmMax - margin].
+local savedMin = CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM
 adjustIdleRPM(100000)
-check(CONTROL_CONFIG.idleRPM <= SAFE - 100, "idleRPM adjust clamps under safeRPM")
+check((CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM) <= RPM_MAX - 100,
+    "rpmMin adjust clamps under rpmMax")
 adjustIdleRPM(-100000)
-check(CONTROL_CONFIG.idleRPM >= 100, "idleRPM adjust clamps at floor")
-CONTROL_CONFIG.idleRPM = savedIdle
+check((CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM) >= 100, "rpmMin adjust clamps at floor")
+CONTROL_CONFIG.rpmMin = savedMin
+CONTROL_CONFIG.idleRPM = savedMin
 ConfigUtil.writeConfig("control")
 
 -- Band adjusters: widen/narrow symmetrically, refuse to collapse below 10% width.
@@ -455,9 +464,9 @@ check(CONTROL_CONFIG.coilsOffAbovePct - CONTROL_CONFIG.coilsOnBelowPct >= 10,
 CONTROL_CONFIG.coilsOnBelowPct, CONTROL_CONFIG.coilsOffAbovePct = 30, 70
 ConfigUtil.writeConfig("control")
 
--- Per-turbine idleRPM override + responsiveness throttle, end to end:
+-- Per-turbine rpmMin override + responsiveness throttle, end to end:
 -- turbine 2 targets 900 RPM while steering runs every 3rd tick with deadbands active.
-CONTROL_CONFIG.entityOverrides["BigReactors-Turbine_2"] = { idleRPM = 900 }
+CONTROL_CONFIG.entityOverrides["BigReactors-Turbine_2"] = { rpmMin = 900, rpmMax = 1100 }
 CONTROL_CONFIG.controlIntervalTicks = 3
 CONTROL_CONFIG.rpmDeadband = 15
 CONTROL_CONFIG.rodWriteThreshold = 0.5
@@ -474,8 +483,8 @@ local violationsBefore = ceilingViolations
 runTicks(900)
 
 local t2 = world.fakeTurbines[2]
-check(math.abs(t2.rpm - 900) < 250,
-    string.format("per-turbine idleRPM override honored (turbine 2 at %.0f RPM)", t2.rpm))
+check(math.abs(t2.rpm - 1000) < 250,
+    string.format("per-turbine rpm band override honored (turbine 2 at %.0f RPM)", t2.rpm))
 local othersNear = true
 for i, t in ipairs(world.fakeTurbines) do
     if i ~= 2 then othersNear = othersNear and math.abs(t.rpm - IDLE) < 250 end

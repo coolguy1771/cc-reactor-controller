@@ -195,9 +195,13 @@ local function drawTurbineCard(mon, ox, oy, turbine)
         gaugeSafe = cfg.ceilingRPM               -- fill turns red once past the 2000 redline
         target = cfg.ceilingRPM                  -- white line marks the 2000 danger threshold
     else
-        gaugeCeiling = cfg.ceilingRPM
+        gaugeCeiling = cfg.rpmMax or cfg.ceilingRPM
         gaugeSafe = cfg.safeRPM
-        target = clampIdleRPM(getEntitySetting(turbine.id, "idleRPM"))
+        local rpmMin = getEntitySetting(turbine.id, "rpmMin")
+            or cfg.rpmMin or cfg.idleRPM
+        local rpmMax = getEntitySetting(turbine.id, "rpmMax")
+            or cfg.rpmMax or cfg.ceilingRPM
+        target = (rpmMin + rpmMax) / 2
     end
 
     local border = colors.green
@@ -285,8 +289,9 @@ local function drawHeader(mon, width, page, pages)
 
     -- Verbose current-settings line (the bordered +/- buttons below change these).
     local settings = string.format(
-        "Target RPM %d    Buffer band %d-%d%%    Coil band %d-%d%%    Interval %d tick    Optimize: %s",
-        cfg.idleRPM, cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
+        "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%%    Interval %d tick    Optimize: %s",
+        cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
+        cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
         cfg.controlIntervalTicks or 1, cfg.optimizeMode == "efficiency" and "Efficiency" or "Output")
     drawText(mon, truncate(settings, width - 2), 2, 4, colors.gray, colors.white)
 
