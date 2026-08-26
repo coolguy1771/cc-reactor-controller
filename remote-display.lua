@@ -42,6 +42,8 @@ rednet.open(modemName)
 local monitors, frameBuffers = {}, {}
 local serverId, serverSession, permission = nil, nil, "read-only"
 local lastServerMessage, commandSequence = -math.huge, 0
+local lastTouch = { at = -math.huge, monitor = "", x = -1, y = -1 }
+local TOUCH_DEBOUNCE = 0.5
 
 local function discoverMonitors()
     monitors = {}
@@ -144,7 +146,11 @@ while true do
         end
     elseif event[1] == "monitor_touch" then
         local name, x, y = event[2], event[3], event[4]
-        if monitors[name] and serverId and permission == "control" then
+        local now = os.clock()
+        local duplicate = name == lastTouch.monitor and x == lastTouch.x and y == lastTouch.y
+            and now - lastTouch.at < TOUCH_DEBOUNCE
+        if monitors[name] and serverId and permission == "control" and not duplicate then
+            lastTouch = { at = now, monitor = name, x = x, y = y }
             commandSequence = commandSequence + 1
             rednet.send(serverId, message("touch", {
                 monitor = name, x = x, y = y, session = serverSession, commandSeq = commandSequence,

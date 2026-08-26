@@ -8,7 +8,7 @@ local state = {
     running = false,
     modemName = nil,
     callbacks = nil,
-    clients = {}, -- sender id -> { lastSeen, monitors = { localName -> remoteId } }
+    clients = {}, -- sender id -> { lastSeen, monitors = { localName -> remoteId }, lastTouchAt, lastTouchKey }
     terminals = {},
     session = nil,
 }
@@ -282,7 +282,15 @@ local function handleMessage(sender, message, protocol)
         if id and client.role == "control" and message.session == state.session
             and sequence > (client.lastCommandSeq or 0)
             and type(message.x) == "number" and type(message.y) == "number" then
-            client.lastSeen = os.clock()
+            local touchKey = message.monitor .. ":" .. message.x .. ":" .. message.y
+            local now = os.clock()
+            if client.lastTouchKey == touchKey and now - (client.lastTouchAt or -math.huge) < 0.5 then
+                client.lastCommandSeq = sequence
+                return
+            end
+            client.lastTouchKey = touchKey
+            client.lastTouchAt = now
+            client.lastSeen = now
             client.lastCommandSeq = sequence
             state.callbacks.touch(id, message.x, message.y, { clientId = sender, role = client.role })
         end
