@@ -80,26 +80,38 @@ local function sendHello()
     if serverId then rednet.send(serverId, msg, config.protocol) else rednet.broadcast(msg, config.protocol) end
 end
 
+local function blankBlit(width)
+    local spaces = string.rep(" ", width)
+    return spaces, string.rep(colors.toBlit(colors.white), width),
+        string.rep(colors.toBlit(colors.black), width)
+end
+
 local function drawFrame(msg)
     local monitor = monitors[msg.monitor]
     if not monitor or msg.session ~= serverSession or type(msg.rows) ~= "table" then return end
+    local width, height = monitor.getSize()
     local buffer = frameBuffers[msg.monitor]
     if not buffer or buffer.session ~= msg.session or msg.full then
         buffer = { session = msg.session, seq = 0, rows = {} }
         frameBuffers[msg.monitor] = buffer
+        monitor.clear()
     end
     if (tonumber(msg.seq) or 0) <= buffer.seq then return end
     buffer.seq = msg.seq
     for y, row in pairs(msg.rows) do buffer.rows[tonumber(y) or y] = row end
-    local width, height = monitor.getSize()
     monitor.setCursorBlink(false)
-    for y = 1, math.min(height, msg.height or height) do
+    local rowsToDraw = math.min(height, msg.height or height)
+    for y = 1, rowsToDraw do
         local row = buffer.rows[y]
         if type(row) == "table" and type(row[1]) == "string"
             and type(row[2]) == "string" and type(row[3]) == "string" then
             local n = math.min(width, #row[1], #row[2], #row[3])
             monitor.setCursorPos(1, y)
             monitor.blit(row[1]:sub(1, n), row[2]:sub(1, n), row[3]:sub(1, n))
+        elseif msg.full then
+            local text, fg, bg = blankBlit(width)
+            monitor.setCursorPos(1, y)
+            monitor.blit(text, fg, bg)
         end
     end
 end
@@ -116,12 +128,16 @@ while true do
         local sender, msg, protocol = event[2], event[3], event[4]
         if protocol == config.protocol and type(msg) == "table" and msg.secret == config.secret then
             if msg.kind == "hello_ack" and (not serverId or sender == serverId) then
+                local firstConnect = not serverId
                 local changedSession = serverSession ~= msg.session
+                local changedRole = permission ~= (msg.role or "read-only")
                 serverId, serverSession = sender, msg.session
                 permission = msg.role or "read-only"
                 lastServerMessage = os.clock()
                 if changedSession then frameBuffers = {}; commandSequence = 0 end
-                print(("Connected to controller %d (%s)"):format(serverId, permission))
+                if firstConnect or changedSession or changedRole then
+                    print(("Connected to controller %d (%s)"):format(serverId, permission))
+                end
             elseif sender == serverId and msg.kind == "frame" then
                 lastServerMessage = os.clock(); drawFrame(msg)
             end

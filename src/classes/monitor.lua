@@ -580,7 +580,7 @@ local Monitor = {
         -- A local monitor ignores this. A remote buffered monitor sends one complete frame
         -- here, after window redirection has finished composing the UI.
         if self.monPeripheral.flush then
-            self.monPeripheral.flush()
+            self.monPeripheral.flush(true)
         end
     end,
 

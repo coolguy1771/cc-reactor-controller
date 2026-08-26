@@ -119,6 +119,9 @@ local function makeBufferedTerminal(sender, localName, width, height, role)
         width, height = newWidth, newHeight
         cursorX, cursorY = 1, 1
         resetRows()
+        lastRows = nil
+        frameSequence = 0
+        dirty = true
         return true
     end
     function terminal.flush(force)
@@ -126,12 +129,13 @@ local function makeBufferedTerminal(sender, localName, width, height, role)
         local now = os.clock()
         local interval = CONTROL_CONFIG.remoteRefreshSeconds or 0.25
         if not force and now - lastFlush < interval then return end
+        local sendFull = lastRows == nil or CONTROL_CONFIG.remoteDeltaFrames == false
         local payloadRows, changed = {}, 0
         for y = 1, height do
             local row = rows[y]
             local packed = { row.text, row.fg, row.bg }
             local previous = lastRows and lastRows[y]
-            if not CONTROL_CONFIG.remoteDeltaFrames or not previous
+            if sendFull or not previous
                 or previous[1] ~= packed[1] or previous[2] ~= packed[2] or previous[3] ~= packed[3] then
                 payloadRows[y] = packed
                 changed = changed + 1
@@ -144,7 +148,7 @@ local function makeBufferedTerminal(sender, localName, width, height, role)
             secret = CONTROL_CONFIG.remoteSecret,
             session = state.session,
             seq = frameSequence,
-            full = lastRows == nil or CONTROL_CONFIG.remoteDeltaFrames == false,
+            full = sendFull,
             monitor = localName,
             width = width,
             height = height,
