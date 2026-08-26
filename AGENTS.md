@@ -12,5 +12,5 @@
 - Remote display and watchdog share one secret with the controller (`remoteSecret` / `secret` in respective config files).
 - Display computers need `"control"` in controller `remoteClients` for touchscreen buttons; unlisted clients are read-only.
 - Remote Ender Modem displays must not use `window.create`; draw directly to the buffered terminal proxy.
-- Remote monitor touches can double-fire over Rednet; debounce duplicate coordinates within 500ms on client and server.
+- Remote monitor touches can double-fire over Rednet; debounce with a 1s global cooldown on display client, server, and remote button clicks.
 - Controller defaults to auto mode after self-test (`requireManualStart = false`); boots into AUTO_OUTPUT unless overridden.

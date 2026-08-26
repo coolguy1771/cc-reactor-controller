@@ -12,6 +12,7 @@ _G.CONTROL_CONFIG = {
     remoteRefreshSeconds = 0.25,
     remoteClientTimeoutSeconds = 15,
     remoteDeltaFrames = true,
+    remoteTouchCooldownSeconds = 1.0,
     remoteDefaultRole = "read-only",
     -- Authenticated client permissions keyed by ComputerCraft computer id.
     -- "control" may use touchscreen controls; "read-only" only receives frames.

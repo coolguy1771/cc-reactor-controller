@@ -4,6 +4,7 @@ local state = "BOOTING"
 local scramReason = nil
 local initialized = false
 local autoStartAttempted = false
+local lastOperatorModeAt = -math.huge
 
 local function journal(level, code, message, data)
     if EventJournal then EventJournal.record(level, code, message, data) end
@@ -49,6 +50,11 @@ local function requestMode(mode, source)
     local valid = { OFF=true, AUTO_OUTPUT=true, AUTO_EFFICIENCY=true, MANUAL=true, MAINTENANCE=true }
     if not valid[mode] then return false, "invalid mode" end
     if state == "SCRAM" then return false, "SCRAM must be reset" end
+    local now = os.clock()
+    local cooldown = CONTROL_CONFIG.remoteTouchCooldownSeconds or 1.0
+    if source ~= "auto-start" and now - lastOperatorModeAt < cooldown then
+        return false, "operator cooldown"
+    end
     if mode ~= "OFF" then
         local ok, failures = selfTest()
         if not ok then return false, table.concat(failures, "; ") end

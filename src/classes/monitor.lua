@@ -585,6 +585,12 @@ local Monitor = {
     end,
 
     handleClick = function(self, buttonName)
+        local now = os.clock()
+        local cooldown = CONTROL_CONFIG.remoteTouchCooldownSeconds or 1.0
+        if self.monPeripheral._remote then
+            if now - (self.lastClickAt or -math.huge) < cooldown then return end
+            self.lastClickAt = now
+        end
         local btn = self.touch.buttonList[buttonName]
         if btn then btn.func() end
     end,
