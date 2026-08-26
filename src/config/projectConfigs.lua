@@ -50,10 +50,10 @@ _G.CONTROL_CONFIG = {
     overspeedScramRPM = 2000,
     scramTurbineSteam = 0,
 
-    -- Event/alarm/history retention.
-    eventLogMaxBytes = 131072,
-    alarmHistoryLimit = 200,
-    historySeconds = 3600,
+    -- Event/alarm/history retention (kept small for tight CC computer disks).
+    eventLogMaxBytes = 32768,
+    alarmHistoryLimit = 100,
+    historySeconds = 600,
     historySampleSeconds = 1,
     historyPersistSeconds = 60,
 

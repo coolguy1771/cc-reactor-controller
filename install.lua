@@ -1,19 +1,23 @@
 -- Transactional installer/updater for reactor controller components.
 -- Usage:
---   wget run <raw install.lua URL> controller [owner] [repo] [branch]
+--   wget run <raw install.lua URL> controller [owner] [repo] [branch] [backup]
 --   wget run <raw install.lua URL> display [owner] [repo] [branch]
 --   wget run <raw install.lua URL> watchdog [owner] [repo] [branch]
 --
 -- Roles: controller, display, watchdog.
 -- Defaults: coolguy1771 / cc-reactor-controller / main
+-- Disk usage: installs one file at a time via /.reactor-install.tmp (no full-tree staging).
+-- Optional trailing "backup" keeps /.reactor-update-backup after success (uses more disk).
 
 local args = { ... }
 local ROLE = args[1] or "controller"
 local OWNER = args[2] or "coolguy1771"
 local REPO = args[3] or "cc-reactor-controller"
 local BRANCH = args[4] or "main"
-local STAGE = "/.reactor-update-staging"
+local KEEP_BACKUP = args[5] == "backup"
+local TEMP = "/.reactor-install.tmp"
 local BACKUP = "/.reactor-update-backup"
+local STAGE = "/.reactor-update-staging"
 local RAW_BASE = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(OWNER, REPO, BRANCH)
 
 local MANIFEST = {
@@ -82,50 +86,86 @@ local function copyIfPresent(source, destination)
     fs.copy(source, destination)
 end
 
-if fs.exists(STAGE) then fs.delete(STAGE) end
-if fs.exists(BACKUP) then fs.delete(BACKUP) end
-fs.makeDir(STAGE)
-fs.makeDir(BACKUP)
+local function deleteTree(path)
+    if not fs.exists(path) then return end
+    if fs.isDir(path) then
+        for _, name in ipairs(fs.list(path)) do
+            deleteTree(fs.combine(path, name))
+        end
+        fs.delete(path)
+    else
+        fs.delete(path)
+    end
+end
+
+local function freeBytes()
+    if fs.getFreeSpace then return fs.getFreeSpace("/") end
+    return nil
+end
+
+deleteTree(STAGE)
+deleteTree(BACKUP)
+if fs.exists(TEMP) then fs.delete(TEMP) end
+
+local free = freeBytes()
+if free then
+    print(("Disk free: %d bytes"):format(free))
+    if free < 8192 then
+        error("Disk full. Delete /.reactor-update-backup, /.reactor-update-staging, /logs/events.log*")
+    end
+end
 
 print("Installing " .. ROLE .. " from " .. OWNER .. "/" .. REPO .. " (" .. BRANCH .. ")")
 
-for i, item in ipairs(files) do
-    local staged = fs.combine(STAGE, item.target)
-    writeFile(staged, get(RAW_BASE .. item.source))
-    if item.target:sub(-4) == ".lua" then
-        local fn, err = loadfile(staged)
-        if not fn then
-            error("Syntax validation failed for " .. item.target .. ": " .. tostring(err))
-        end
-    end
-    print(("[%d/%d] validated %s"):format(i, #files, item.target))
-end
-
-for _, item in ipairs(files) do
-    copyIfPresent("/" .. item.target, fs.combine(BACKUP, item.target))
-end
-
-local committed = {}
-local ok, err = pcall(function()
-    for _, item in ipairs(files) do
-        local target = "/" .. item.target
-        local dir = fs.getDir(target)
-        if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
-        if fs.exists(target) then fs.delete(target) end
-        fs.move(fs.combine(STAGE, item.target), target)
-        committed[#committed + 1] = item.target
-    end
-end)
-
-if not ok then
-    print("Commit failed; rolling back: " .. tostring(err))
+local function restoreBackup(committed)
     for _, target in ipairs(committed) do
         local live = "/" .. target
         local saved = fs.combine(BACKUP, target)
         if fs.exists(live) then fs.delete(live) end
         if fs.exists(saved) then fs.copy(saved, live) end
     end
-    error("Update rolled back")
+end
+
+local committed = {}
+local ok, err = pcall(function()
+    for i, item in ipairs(files) do
+        local target = "/" .. item.target
+        writeFile(TEMP, get(RAW_BASE .. item.source))
+        if item.target:sub(-4) == ".lua" then
+            local fn, loadErr = loadfile(TEMP)
+            if not fn then
+                fs.delete(TEMP)
+                error("Syntax validation failed for " .. item.target .. ": " .. tostring(loadErr))
+            end
+        end
+        if KEEP_BACKUP and fs.exists(target) then
+            copyIfPresent(target, fs.combine(BACKUP, item.target))
+        end
+        local dir = fs.getDir(target)
+        if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
+        if fs.exists(target) then fs.delete(target) end
+        fs.move(TEMP, target)
+        committed[#committed + 1] = item.target
+        print(("[%d/%d] installed %s"):format(i, #files, item.target))
+    end
+end)
+
+if fs.exists(TEMP) then fs.delete(TEMP) end
+deleteTree(STAGE)
+
+if not ok then
+    print("Install failed: " .. tostring(err))
+    if KEEP_BACKUP and #committed > 0 then
+        print("Restoring partial backup...")
+        restoreBackup(committed)
+    end
+    error("Update failed")
+end
+
+if not KEEP_BACKUP then
+    deleteTree(BACKUP)
+else
+    print("Backup kept at " .. BACKUP)
 end
 
 writeFile("/.reactor-install.conf", textutils.serialize({
@@ -134,9 +174,11 @@ writeFile("/.reactor-install.conf", textutils.serialize({
     repo = REPO,
     branch = BRANCH,
     installedAt = os.epoch("utc"),
-    backup = BACKUP,
+    backup = KEEP_BACKUP and BACKUP or nil,
 }))
-fs.delete(STAGE)
-print("Install complete. Backup saved to " .. BACKUP)
+
+free = freeBytes()
+if free then print(("Disk free after install: %d bytes"):format(free)) end
+print("Install complete.")
 print("Reboot now? (y/n)")
 if string.lower(read()) == "y" then os.reboot() end
