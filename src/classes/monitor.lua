@@ -490,7 +490,11 @@ local Monitor = {
     handleResize = function(self)
         self.monPeripheral.setTextScale(0.5)
         self.size = Vector2.new(self.monPeripheral.getSize())
-        self.mon = window.create(self.monPeripheral, 1, 1, self.size.x, self.size.y, false)
+        if type(self.monPeripheral.getPaletteColour) == "function" then
+            self.mon = window.create(self.monPeripheral, 1, 1, self.size.x, self.size.y, false)
+        else
+            self.mon = self.monPeripheral
+        end
         self.touch = _G.Touchpoint.new(self.id, self.mon)
         self.buttons = {}
         self.buttonRects = {}

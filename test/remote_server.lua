@@ -42,6 +42,8 @@ RemoteDisplayServer.handleMessage(42, {
 }, CONTROL_CONFIG.remoteProtocol)
 
 assert(attached and attached.id == "remote:42:monitor_0", "remote monitor was not attached")
+assert(type(attached.terminal.getPaletteColour) == "function",
+    "remote terminal missing palette API required by window.create")
 attached.terminal.setCursorPos(1, 1)
 attached.terminal.blit("HELLO", "00000", "fffff")
 attached.terminal.flush(true)

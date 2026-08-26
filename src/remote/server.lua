@@ -101,6 +101,15 @@ local function makeBufferedTerminal(sender, localName, width, height, role)
     function terminal.getTextScale() return scale end
     function terminal.setVisible(value) visible = value ~= false end
     function terminal.getPosition() return 1, 1 end
+    function terminal.getPaletteColour(colour)
+        if colors.getPaletteColour then
+            return colors.getPaletteColour(colour)
+        end
+        return 1, 1, 1
+    end
+    terminal.getPaletteColor = terminal.getPaletteColour
+    function terminal.setPaletteColour(colour, r, g, b) end
+    terminal.setPaletteColor = terminal.setPaletteColour
     function terminal.reposition(_, _, newWidth, newHeight)
         if newWidth and newHeight then terminal.resize(newWidth, newHeight) end
     end
