@@ -178,10 +178,60 @@ function updateSteamGroups(s)
     end
 
     s.steamGroups = groups
+    updateSteamCoordination(s)
     -- More than one non-empty group means the UI should surface group ids on the cards.
     local count = 0
     for _ in pairs(groups) do count = count + 1 end
     s.hasSteamGroups = (CONTROL_CONFIG.steamGroups ~= nil and #CONTROL_CONFIG.steamGroups > 0 and count > 1)
+end
+
+local function clamp01(value)
+    if value <= 0 then return 0 end
+    if value >= 1 then return 1 end
+    return value
+end
+
+-- Coupled steam relief: high casing or a steam tank above bufferMax drives BOTH more turbine
+-- intake and more rod insertion so production and consumption move together.
+---@param s OverallStats
+function updateSteamCoordination(s)
+    local groups = s.steamGroups or {}
+    if CONTROL_CONFIG.steamCoordination == false then
+        for _, g in pairs(groups) do g.pressureRelief = 0 end
+        return
+    end
+
+    local bufferMax = CONTROL_CONFIG.bufferMax or 70
+    local targetCase = CONTROL_CONFIG.targetCasingTemperature or 1800
+    local caseSpan = CONTROL_CONFIG.casingReliefSpan or 400
+    local maxCaseByGroup = {}
+
+    for _, reactor in pairs(_G.reactors) do
+        if reactor.activelyCooled then
+            local gid = reactor.groupId or "default"
+            local caseTemp = reactor.averageCaseTemp or 0
+            maxCaseByGroup[gid] = math.max(maxCaseByGroup[gid] or 0, caseTemp)
+        end
+    end
+
+    for gid, g in pairs(groups) do
+        local steamPct = (g.steamCapacity > 0) and (g.storedSteam / g.steamCapacity * 100) or 0
+        g.steamBufferPct = steamPct
+
+        local steamPressure = 0
+        if steamPct > bufferMax and bufferMax < 100 then
+            steamPressure = clamp01((steamPct - bufferMax) / (100 - bufferMax))
+        end
+
+        local maxCase = maxCaseByGroup[gid] or 0
+        g.maxCasingTemp = maxCase
+        local casePressure = 0
+        if caseSpan > 0 and maxCase > targetCase then
+            casePressure = clamp01((maxCase - targetCase) / caseSpan)
+        end
+
+        g.pressureRelief = math.max(steamPressure, casePressure)
+    end
 end
 
 -- Efficiency merit-order dispatch (feature: "crank the efficient reactors first").

@@ -16,6 +16,12 @@ local function clamp(value, low, high)
     return value
 end
 
+local function steamPressureRelief(turbine, config)
+    if config.steamCoordination == false or not turbine.groupId then return 0 end
+    local group = _G.overallStats.steamGroups and _G.overallStats.steamGroups[turbine.groupId]
+    return group and group.pressureRelief or 0
+end
+
 ---@class Turbine
 ---@field id string
 ---@field active boolean
@@ -181,6 +187,10 @@ local Turbine = {
         elseif bufPct >= coilsOffAbove then
             self.desiredCoils = false
         end
+        local relief = steamPressureRelief(self, config)
+        if relief >= (config.steamReliefForceCoilsAt or 0.65) then
+            self.desiredCoils = true
+        end
         self:writeCoils(self.desiredCoils)
 
         -- 3a) FLYWHEEL SPIN-UP -- armed + idle: open the throttle fully and let the rotor climb
@@ -196,13 +206,19 @@ local Turbine = {
         -- 3b) STEAM PI -- hold idleTarget (peak-efficiency 1800, per-turbine override honored).
         --    Integral carries the mode's steady-state steam. Errors inside the deadband are
         --    ignored (server-lag reduction: fewer writes).
+        --    Steam coordination raises the RPM target and floor when casing/steam tank is hot.
+        local rpmSpan = math.max(0, safe - idleTarget)
+        idleTarget = idleTarget + relief * (config.steamReliefRpmBoostPct or 0.4) * rpmSpan
+        idleTarget = math.min(idleTarget, safe - 50)
+
         local err = idleTarget - avgRpm
         if math.abs(err) < (config.rpmDeadband or 0) then
             err = 0
         end
         self.pid.integral = clamp(self.pid.integral + config.turbineKi * err, 0, self.flowMaxMax)
         local output = clamp(self.pid.integral + config.turbineKp * err, 0, self.flowMaxMax)
-        self:writeSteam(output)
+        local minFlow = relief * (config.steamReliefMinFlowPct or 0.5) * self.flowMaxMax
+        self:writeSteam(math.max(output, minFlow))
     end,
 }
 

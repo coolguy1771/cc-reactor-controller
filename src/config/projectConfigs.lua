@@ -30,13 +30,23 @@ _G.CONTROL_CONFIG = {
 
     -- Safety interlocks. Set a numeric threshold to 0 to disable only that check.
     -- Casing often sits at 1000-1800C during normal steam operation; 1000 was too low.
-    maxFuelTemperature = 2000,
-    maxCasingTemperature = 2000,
+    maxFuelTemperature = 2500,
+    maxCasingTemperature = 2200,
     maxSteamBufferPct = 100,
     -- Skip thermal/steam/turbine-availability SCRAMs briefly after entering RUNNING.
     safetyStartupGraceSeconds = 10,
     -- When false, SCRAM reset returns to READY and waits for operator (avoids temp re-trip loop).
     autoStartAfterScramReset = false,
+
+    -- Steam-network coordination: when casing is hot or the steam tank is above bufferMax,
+    -- turbines pull harder AND reactor rods insert together (both sides of the loop).
+    steamCoordination = true,
+    targetCasingTemperature = 1800,   -- relief ramps from here up to +casingReliefSpan
+    casingReliefSpan = 400,
+    steamReliefRodBias = 25,            -- max extra rod insertion (%) at full relief
+    steamReliefMinFlowPct = 0.5,        -- min steam cap (% of turbine max) at full relief
+    steamReliefRpmBoostPct = 0.4,       -- RPM target boost (% of safe-idle span) at full relief
+    steamReliefForceCoilsAt = 0.65,     -- force coils on above this relief level (0-1)
     overspeedScramRPM = 2000,
     scramTurbineSteam = 0,
 

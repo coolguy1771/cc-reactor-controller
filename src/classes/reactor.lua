@@ -289,6 +289,15 @@ local Reactor = {
             rftRodLevel = math.max(rftRodLevel, self.bestEffLevel)
         end
 
+        if self.activelyCooled and CONTROL_CONFIG.steamCoordination ~= false then
+            local group = _G.overallStats.steamGroups and self.groupId
+                and _G.overallStats.steamGroups[self.groupId]
+            local relief = group and group.pressureRelief or 0
+            if relief > 0 then
+                rftRodLevel = math.min(100, rftRodLevel + relief * (CONTROL_CONFIG.steamReliefRodBias or 25))
+            end
+        end
+
         -- Rod write threshold (server-lag reduction): skip the peripheral write when the
         -- level barely moved. Edges (0/100) always write so full-off/full-on land exactly.
         local threshold = CONTROL_CONFIG.rodWriteThreshold or 0
