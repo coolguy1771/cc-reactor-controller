@@ -487,9 +487,9 @@ check(math.abs(t2.rpm - 1000) < 250,
     string.format("per-turbine rpm band override honored (turbine 2 at %.0f RPM)", t2.rpm))
 local othersNear = true
 for i, t in ipairs(world.fakeTurbines) do
-    if i ~= 2 then othersNear = othersNear and math.abs(t.rpm - IDLE) < 250 end
+    if i ~= 2 then othersNear = othersNear and inRpmBand(t.rpm) end
 end
-check(othersNear, "other turbines still ~1800 with interval+deadband active")
+check(othersNear, "other turbines stay in RPM band with interval+deadband active")
 check(rodWrites <= 300,
     string.format("rod writes throttled by controlIntervalTicks (%d writes in 900 ticks)", rodWrites))
 check(ceilingViolations == violationsBefore, "no ceiling violations under throttled steering")
