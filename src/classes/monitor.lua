@@ -262,7 +262,12 @@ local function drawHeader(mon, width, page, pages)
     local cfg = CONTROL_CONFIG
 
     local safetyState = SafetyManager and SafetyManager.state() or "UNKNOWN"
-    drawText(mon, truncate("REACTOR SCADA  MODE " .. safetyState, width - 12), 2, 1, colors.gray,
+    local scramReason = SafetyManager and SafetyManager.reason() or nil
+    local modeLine = "REACTOR SCADA  MODE " .. safetyState
+    if safetyState == "SCRAM" and scramReason then
+        modeLine = modeLine .. "  " .. scramReason
+    end
+    drawText(mon, truncate(modeLine, width - 12), 2, 1, colors.gray,
         safetyState == "SCRAM" and colors.red or colors.white)
     drawText(mon, string.format("Reactors:%d  Turbines:%d", s.passiveReactorCount + s.activeReactorCount, s.turbineCount),
         width - 21, 1, colors.gray, colors.yellow)

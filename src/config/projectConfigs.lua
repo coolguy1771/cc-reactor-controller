@@ -29,9 +29,14 @@ _G.CONTROL_CONFIG = {
     expectedPeripherals = {},
 
     -- Safety interlocks. Set a numeric threshold to 0 to disable only that check.
+    -- Casing often sits at 1000-1800C during normal steam operation; 1000 was too low.
     maxFuelTemperature = 2000,
-    maxCasingTemperature = 1000,
+    maxCasingTemperature = 2000,
     maxSteamBufferPct = 100,
+    -- Skip thermal/steam/turbine-availability SCRAMs briefly after entering RUNNING.
+    safetyStartupGraceSeconds = 10,
+    -- When false, SCRAM reset returns to READY and waits for operator (avoids temp re-trip loop).
+    autoStartAfterScramReset = false,
     overspeedScramRPM = 2000,
     scramTurbineSteam = 0,
 

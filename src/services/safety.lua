@@ -5,6 +5,7 @@ local scramReason = nil
 local initialized = false
 local autoStartAttempted = false
 local lastOperatorModeAt = -math.huge
+local runningSince = nil
 
 local function journal(level, code, message, data)
     if EventJournal then EventJournal.record(level, code, message, data) end
@@ -63,17 +64,19 @@ local function requestMode(mode, source)
     CONTROL_CONFIG.autoMode = mode == "AUTO_OUTPUT" or mode == "AUTO_EFFICIENCY"
     CONTROL_CONFIG.optimizeMode = mode == "AUTO_EFFICIENCY" and "efficiency" or "output"
     if mode == "OFF" then
-        state = "READY"; forceSafe()
+        state = "READY"; runningSince = nil; forceSafe()
     elseif mode == "MAINTENANCE" then
-        state = "MAINTENANCE"; forceSafe()
+        state = "MAINTENANCE"; runningSince = nil; forceSafe()
     else
         state = "RUNNING"
+        runningSince = os.clock()
         _G.btnOn = true
         _G.turbinesOn = true
         for _, reactor in pairs(_G.reactors) do pcall(reactor.setActive, true); reactor.active = true end
         for _, turbine in pairs(_G.turbines) do pcall(function() turbine:setActive(true) end) end
     end
     if ConfigUtil then ConfigUtil.writeConfig("control") end
+    if source ~= "auto-start" then lastOperatorModeAt = now end
     journal("INFO", "mode", "mode changed to " .. mode, { source = source or "local" })
     return true
 end
@@ -125,33 +128,46 @@ local function resetScram(source)
     if AlarmManager then AlarmManager.clear("scram", true) end
     state = "READY"; CONTROL_CONFIG.operatingMode = "OFF"; forceSafe()
     journal("INFO", "scram_reset", "SCRAM reset", { source = source })
-    if not CONTROL_CONFIG.requireManualStart and CONTROL_CONFIG.autoMode ~= false then
+    if CONTROL_CONFIG.autoStartAfterScramReset
+        and not CONTROL_CONFIG.requireManualStart
+        and CONTROL_CONFIG.autoMode ~= false then
         requestMode(desiredRunningMode(), "auto-start")
     end
     return true
 end
 
 local function finite(value) return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge end
+local function inStartupGrace()
+    if state ~= "RUNNING" or not runningSince then return false end
+    local grace = CONTROL_CONFIG.safetyStartupGraceSeconds or 0
+    return grace > 0 and (os.clock() - runningSince) < grace
+end
+
 local function evaluate()
     if not initialized then return initialize() end
     if state == "SCRAM" then forceSafe(); return false end
 
+    local grace = inStartupGrace()
     local activeSteamReactors = 0
     for id, reactor in pairs(_G.reactors) do
         if not finite(reactor.averageFuelTemp) or not finite(reactor.averageCaseTemp) then
             return scram("invalid reactor sensor reading: " .. id, id)
         end
-        if (CONTROL_CONFIG.maxFuelTemperature or 0) > 0 and reactor.averageFuelTemp >= CONTROL_CONFIG.maxFuelTemperature then
-            return scram("fuel temperature high: " .. id, id)
-        end
-        if (CONTROL_CONFIG.maxCasingTemperature or 0) > 0 and reactor.averageCaseTemp >= CONTROL_CONFIG.maxCasingTemperature then
-            return scram("casing temperature high: " .. id, id)
+        if not grace then
+            if (CONTROL_CONFIG.maxFuelTemperature or 0) > 0 and reactor.averageFuelTemp >= CONTROL_CONFIG.maxFuelTemperature then
+                return scram("fuel temperature high: " .. id, id)
+            end
+            if (CONTROL_CONFIG.maxCasingTemperature or 0) > 0 and reactor.averageCaseTemp >= CONTROL_CONFIG.maxCasingTemperature then
+                return scram("casing temperature high: " .. id, id)
+            end
         end
         if reactor.activelyCooled and reactor.active then
             activeSteamReactors = activeSteamReactors + 1
-            local pct = reactor.steamCapacity > 0 and reactor.averageStoredSteam / reactor.steamCapacity * 100 or 0
-            if (CONTROL_CONFIG.maxSteamBufferPct or 0) > 0 and pct > CONTROL_CONFIG.maxSteamBufferPct then
-                return scram("steam buffer critically high: " .. id, id)
+            if not grace then
+                local pct = reactor.steamCapacity > 0 and reactor.averageStoredSteam / reactor.steamCapacity * 100 or 0
+                if (CONTROL_CONFIG.maxSteamBufferPct or 0) > 0 and pct > CONTROL_CONFIG.maxSteamBufferPct then
+                    return scram("steam buffer critically high: " .. id, id)
+                end
             end
         end
     end
@@ -164,7 +180,7 @@ local function evaluate()
             return scram("turbine overspeed: " .. id, id)
         end
     end
-    if state == "RUNNING" and activeSteamReactors > 0 and activeTurbineCount == 0 then
+    if not grace and state == "RUNNING" and activeSteamReactors > 0 and activeTurbineCount == 0 then
         return scram("all turbines unavailable while steam reactor active", "peripheral")
     end
     return true
