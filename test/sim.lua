@@ -276,6 +276,7 @@ for _ in pairs(_G.turbines) do turbineCount = turbineCount + 1 end
 for _ in pairs(_G.reactors) do reactorCount = reactorCount + 1 end
 check(turbineCount == 5, "5 turbines wrapped")
 check(reactorCount == 3, "3 reactors wrapped")
+CONTROL_CONFIG.requireManualStart = true
 local safetyReady = SafetyManager.initialize()
 check(safetyReady and SafetyManager.state() == "READY", "safety self-test reaches READY")
 local started = SafetyManager.requestMode("AUTO_OUTPUT", "test")

@@ -18,11 +18,11 @@ _G.CONTROL_CONFIG = {
     remoteClients = {},
     allowRemoteFlywheel = false,
 
-    -- Fail-closed operating state. The controller always boots OFF and requires an operator
-    -- start after self-test. Valid modes: OFF, AUTO_OUTPUT, AUTO_EFFICIENCY, MANUAL,
+    -- Fail-closed operating state. When requireManualStart is false the controller enters
+    -- AUTO after a passing self-test. Valid modes: OFF, AUTO_OUTPUT, AUTO_EFFICIENCY, MANUAL,
     -- MAINTENANCE, SCRAM.
     operatingMode = "OFF",
-    requireManualStart = true,
+    requireManualStart = false,
     minimumReactors = 1,
     minimumTurbines = 0,
     expectedPeripherals = {},

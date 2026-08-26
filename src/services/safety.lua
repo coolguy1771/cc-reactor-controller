@@ -3,6 +3,7 @@
 local state = "BOOTING"
 local scramReason = nil
 local initialized = false
+local autoStartAttempted = false
 
 local function journal(level, code, message, data)
     if EventJournal then EventJournal.record(level, code, message, data) end
@@ -21,18 +22,6 @@ local function forceSafe()
     _G.btnOn = false
 end
 
-local function scram(reason, source)
-    if state ~= "SCRAM" then
-        scramReason = tostring(reason or "unspecified")
-        state = "SCRAM"
-        CONTROL_CONFIG.operatingMode = "SCRAM"
-        if AlarmManager then AlarmManager.raise("scram", "critical", scramReason, source or "safety", true) end
-        journal("CRITICAL", "scram", scramReason, { source = source })
-    end
-    forceSafe()
-    return false, scramReason
-end
-
 local function selfTest()
     local failures = {}
     local reactorCount, turbineCount = 0, 0
@@ -49,23 +38,11 @@ local function selfTest()
     return #failures == 0, failures
 end
 
-local function initialize()
-    state = "SELF_TEST"
-    forceSafe()
-    local ok, failures = selfTest()
-    if ok then
-        state = "READY"
-        CONTROL_CONFIG.operatingMode = "OFF"
-        journal("INFO", "self_test", "controller ready")
-    else
-        state = "DEGRADED"
-        CONTROL_CONFIG.operatingMode = "OFF"
-        local message = table.concat(failures, "; ")
-        if AlarmManager then AlarmManager.raise("self_test", "critical", message, "safety", true) end
-        journal("ERROR", "self_test", message)
+local function desiredRunningMode()
+    if CONTROL_CONFIG.optimizeMode == "efficiency" then
+        return "AUTO_EFFICIENCY"
     end
-    initialized = true
-    return ok, failures
+    return "AUTO_OUTPUT"
 end
 
 local function requestMode(mode, source)
@@ -86,12 +63,52 @@ local function requestMode(mode, source)
     else
         state = "RUNNING"
         _G.btnOn = true
+        _G.turbinesOn = true
         for _, reactor in pairs(_G.reactors) do pcall(reactor.setActive, true); reactor.active = true end
         for _, turbine in pairs(_G.turbines) do pcall(function() turbine:setActive(true) end) end
     end
     if ConfigUtil then ConfigUtil.writeConfig("control") end
     journal("INFO", "mode", "mode changed to " .. mode, { source = source or "local" })
     return true
+end
+
+local function tryAutoStart()
+    if autoStartAttempted or CONTROL_CONFIG.requireManualStart or state ~= "READY" then return end
+    if CONTROL_CONFIG.autoMode == false then return end
+    autoStartAttempted = true
+    requestMode(desiredRunningMode(), "auto-start")
+end
+
+local function scram(reason, source)
+    if state ~= "SCRAM" then
+        scramReason = tostring(reason or "unspecified")
+        state = "SCRAM"
+        CONTROL_CONFIG.operatingMode = "SCRAM"
+        if AlarmManager then AlarmManager.raise("scram", "critical", scramReason, source or "safety", true) end
+        journal("CRITICAL", "scram", scramReason, { source = source })
+    end
+    forceSafe()
+    return false, scramReason
+end
+
+local function initialize()
+    state = "SELF_TEST"
+    forceSafe()
+    local ok, failures = selfTest()
+    if ok then
+        state = "READY"
+        CONTROL_CONFIG.operatingMode = "OFF"
+        journal("INFO", "self_test", "controller ready")
+    else
+        state = "DEGRADED"
+        CONTROL_CONFIG.operatingMode = "OFF"
+        local message = table.concat(failures, "; ")
+        if AlarmManager then AlarmManager.raise("self_test", "critical", message, "safety", true) end
+        journal("ERROR", "self_test", message)
+    end
+    initialized = true
+    if ok then tryAutoStart() end
+    return ok, failures
 end
 
 local function resetScram(source)
@@ -102,6 +119,9 @@ local function resetScram(source)
     if AlarmManager then AlarmManager.clear("scram", true) end
     state = "READY"; CONTROL_CONFIG.operatingMode = "OFF"; forceSafe()
     journal("INFO", "scram_reset", "SCRAM reset", { source = source })
+    if not CONTROL_CONFIG.requireManualStart and CONTROL_CONFIG.autoMode ~= false then
+        requestMode(desiredRunningMode(), "auto-start")
+    end
     return true
 end
 
