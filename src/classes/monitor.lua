@@ -177,6 +177,8 @@ end
 local function drawTurbineCard(mon, ox, oy, turbine)
     local cfg = CONTROL_CONFIG
     local rpm = turbine.rpm or 0
+    local rpmMin = getEntitySetting(turbine.id, "rpmMin") or cfg.rpmMin or cfg.idleRPM
+    local rpmMax = getEntitySetting(turbine.id, "rpmMax") or cfg.rpmMax or cfg.ceilingRPM
 
     -- Flywheel (feature 5): while armed AND idle the gauge rescales past 2000 and the white
     -- line marks the 2000 danger threshold. A capped run scales to flywheelCeilingRPM; an
@@ -195,12 +197,8 @@ local function drawTurbineCard(mon, ox, oy, turbine)
         gaugeSafe = cfg.ceilingRPM               -- fill turns red once past the 2000 redline
         target = cfg.ceilingRPM                  -- white line marks the 2000 danger threshold
     else
-        gaugeCeiling = cfg.rpmMax or cfg.ceilingRPM
+        gaugeCeiling = rpmMax
         gaugeSafe = cfg.safeRPM
-        local rpmMin = getEntitySetting(turbine.id, "rpmMin")
-            or cfg.rpmMin or cfg.idleRPM
-        local rpmMax = getEntitySetting(turbine.id, "rpmMax")
-            or cfg.rpmMax or cfg.ceilingRPM
         target = (rpmMin + rpmMax) / 2
     end
 
@@ -246,7 +244,8 @@ local function drawTurbineCard(mon, ox, oy, turbine)
     elseif armedIdle then
         drawText(mon, string.format("Flywheel spin %d", math.floor(rpm + 0.5)), ix, iy + 7, colors.black, colors.magenta)
     else
-        drawText(mon, "Coils idle, hold " .. target, ix, iy + 7, colors.black, colors.lightGray)
+        drawText(mon, string.format("Coils idle, hold %d-%d", rpmMin, rpmMax),
+            ix, iy + 7, colors.black, colors.lightGray)
     end
 
     -- Own internal buffer = the demand signal.
@@ -289,9 +288,10 @@ local function drawHeader(mon, width, page, pages)
 
     -- Verbose current-settings line (the bordered +/- buttons below change these).
     local settings = string.format(
-        "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%%    Interval %d tick    Optimize: %s",
+        "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%% (+%d RPM)    Interval %d tick    Optimize: %s",
         cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
         cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
+        cfg.coilsRpmHeadroom or 100,
         cfg.controlIntervalTicks or 1, cfg.optimizeMode == "efficiency" and "Efficiency" or "Output")
     drawText(mon, truncate(settings, width - 2), 2, 4, colors.gray, colors.white)
 

@@ -81,9 +81,11 @@ _G.CONTROL_CONFIG = {
     ceilingRPM = 2000,  -- hard cut: steam -> 0 and coils engaged (brake) at/above this
 
     -- Per-turbine demand hysteresis, read from each turbine's OWN internal RF buffer (%).
-    -- Below coilsOnBelowPct -> engage coils (generate). Above coilsOffAbovePct -> disengage (idle).
+    -- Below coilsOnBelowPct -> engage coils (generate). Above coilsOffAbovePct -> disengage
+    -- (idle/freewheel) ONLY while RPM is still near rpmMin; upper-band RPM keeps coils on.
     coilsOnBelowPct = 30,
     coilsOffAbovePct = 70,
+    coilsRpmHeadroom = 100,   -- RPM above rpmMin that counts as "upper band" (keep coils active)
 
     -- Turbine steam PI gains (output = integral + Kp*error, in mB/t; positive: more steam -> more RPM).
     turbineKp = 1.5,
@@ -101,7 +103,7 @@ _G.CONTROL_CONFIG = {
     -- Per-entity overrides of the global settings above, keyed by peripheral id, e.g.
     --   entityOverrides = { ["BigReactors-Turbine_2"] = { idleRPM = 900 } }
     -- Reactors honor: bufferMin, bufferMax.
-    -- Turbines honor: coilsOnBelowPct, coilsOffAbovePct, rpmMin, rpmMax, idleRPM.
+    -- Turbines honor: coilsOnBelowPct, coilsOffAbovePct, coilsRpmHeadroom, rpmMin, rpmMax, idleRPM.
     entityOverrides = {},
 
     -- Steam network groups: which reactors feed which turbines. Each group runs its own

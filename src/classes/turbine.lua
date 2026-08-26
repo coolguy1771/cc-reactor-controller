@@ -201,9 +201,16 @@ local Turbine = {
         local coilsOnBelow = getEntitySetting(self.id, "coilsOnBelowPct")
         local coilsOffAbove = getEntitySetting(self.id, "coilsOffAbovePct")
 
-        -- 2) COIL DEMAND -- hysteresis on this turbine's own internal buffer.
+        -- 2) COIL DEMAND -- buffer hysteresis, but keep coils on in the upper RPM band so a
+        --     full buffer does not freewheel while RPM still has room below rpmMax.
         local bufPct = self:bufferPct()
+        local wiggle = getEntitySetting(self.id, "coilsRpmHeadroom")
+            or config.coilsRpmHeadroom or 100
+        local upperBand = avgRpm > rpmMin + wiggle
+
         if bufPct <= coilsOnBelow then
+            self.desiredCoils = true
+        elseif upperBand then
             self.desiredCoils = true
         elseif bufPct >= coilsOffAbove then
             self.desiredCoils = false
