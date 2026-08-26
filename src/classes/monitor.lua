@@ -490,7 +490,11 @@ local Monitor = {
     handleResize = function(self)
         self.monPeripheral.setTextScale(0.5)
         self.size = Vector2.new(self.monPeripheral.getSize())
-        if type(self.monPeripheral.getPaletteColour) == "function" then
+        -- Remote Ender Modem displays use a buffered terminal that must not go through
+        -- window.create (CC:Tweaked expects a full monitor palette API on the parent).
+        if self.monPeripheral._remote then
+            self.mon = self.monPeripheral
+        elseif type(self.monPeripheral.getPaletteColour) == "function" then
             self.mon = window.create(self.monPeripheral, 1, 1, self.size.x, self.size.y, false)
         else
             self.mon = self.monPeripheral
