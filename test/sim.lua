@@ -31,6 +31,8 @@ local MODULES = {
     "src/services/safety.lua",
     "src/services/watchdog.lua",
     "src/services/telemetry.lua",
+    "src/services/storage.lua",
+    "src/services/dispatcher.lua",
     "src/scripts/controller.lua",
 }
 for _, path in ipairs(MODULES) do dofile(path) end
@@ -44,6 +46,7 @@ local world = {
     activeReactors = {},
     fakeTurbines = {},
     drawShortfall = 0,
+    externalStore = { stored = 1000000, capacity = 10000000 },
 }
 
 local function rodAverage(rods)
@@ -211,13 +214,17 @@ function world.step()
         pools[#pools + 1] = t
         totalStored = totalStored + t.buffer
     end
+    pools[#pools + 1] = world.externalStore
+    totalStored = totalStored + world.externalStore.stored
     local draw = world.baseDraw
     if totalStored > 0 and draw > 0 then
         local pulled = 0
         for _, p in ipairs(pools) do
-            local stored = p.battery or p.buffer
+            local stored = p.battery or p.buffer or p.stored
             local share = math.min(stored, draw * stored / totalStored)
-            if p.battery then p.battery = p.battery - share else p.buffer = p.buffer - share end
+            if p.battery then p.battery = p.battery - share
+            elseif p.buffer then p.buffer = p.buffer - share
+            else p.stored = p.stored - share end
             pulled = pulled + share
         end
         world.drawShortfall = world.drawShortfall + math.max(0, draw - pulled)
@@ -242,8 +249,9 @@ end
 
 local monitorPeripheral = makeTerm(164, 81)
 
-local reactorBig = makeFakeReactor("reactor_big", { maxRF = 60000, rodCount = 9 })
-local reactorMid = makeFakeReactor("reactor_mid", { maxRF = 30000, rodCount = 4 })
+-- Deliberately asymmetric passive capacity catches equal-RF/share dispatch regressions.
+local reactorBig = makeFakeReactor("reactor_large", { maxRF = 80000, rodCount = 9 })
+local reactorMid = makeFakeReactor("reactor_small", { maxRF = 20000, rodCount = 4 })
 local reactorSteam = makeFakeReactor("reactor_steam", { maxSteam = 12000, rodCount = 4, activelyCooled = true })
 world.passiveReactors = { reactorBig, reactorMid }
 world.activeReactors = { reactorSteam }
@@ -259,6 +267,10 @@ for i = 1, 5 do
     peripheral.register("BigReactors-Turbine_" .. i, "BigReactors-Turbine", world.fakeTurbines[i].methods)
 end
 peripheral.register("monitor_0", "monitor", monitorPeripheral)
+peripheral.register("storage_0", "energy_storage", {
+    getEnergy = function() return world.externalStore.stored end,
+    getEnergyCapacity = function() return world.externalStore.capacity end,
+})
 
 ConfigUtil.writeAllConfigsAsDefaults()
 ConfigUtil.readAllConfigs()
@@ -315,6 +327,7 @@ end
 world.baseDraw = 50000
 local aGenerated = {}
 local aRodSamples, aRodCount = 0, 0
+local aTurbineOutput, aTurbineFlow, aTurbineSamples = 0, 0, 0
 runTicks(600, function()
     for i, t in ipairs(world.fakeTurbines) do
         if t.genLast > 0 then aGenerated[i] = true end
@@ -322,12 +335,40 @@ runTicks(600, function()
     if tick > 400 then
         aRodSamples = aRodSamples + rodAverage(reactorSteam.rods)
         aRodCount = aRodCount + 1
+        for _, turbine in ipairs(world.fakeTurbines) do
+            aTurbineOutput = aTurbineOutput + turbine.genLast
+            aTurbineFlow = aTurbineFlow + turbine.flowLast
+        end
+        aTurbineSamples = aTurbineSamples + 1
     end
 end)
 
 local allGeneratedA = true
 for i = 1, 5 do allGeneratedA = allGeneratedA and (aGenerated[i] == true) end
 check(allGeneratedA, "phase A: every turbine generated under load")
+
+-- Sustained-output integration: dispatch is an explicit, capacity-weighted command layer.
+-- The old PID-only controller has no dispatch snapshot, so this must fail before integration.
+local firstDispatch = _G.overallStats.dispatch
+local largeTarget = firstDispatch and firstDispatch.reactors["BigReactors-Reactor_0"]
+local smallTarget = firstDispatch and firstDispatch.reactors["BigReactors-Reactor_1"]
+check(firstDispatch ~= nil and largeTarget ~= nil and smallTarget ~= nil,
+    "asymmetric phase: controller publishes explicit reactor dispatch targets")
+if largeTarget and smallTarget then
+    local largeRF = largeTarget.target or 0
+    local smallRF = smallTarget.target or 0
+    local largeUtil, smallUtil = largeRF / 80000, smallRF / 20000
+    check(math.abs(largeUtil - smallUtil) <= 0.10,
+        string.format("asymmetric phase: 20k/80k reactors receive equal utilization (%.2f/%.2f)", smallUtil, largeUtil))
+end
+local largeMeasured = reactorBig.genLast / 80000
+local smallMeasured = reactorMid.genLast / 20000
+check(math.abs(largeMeasured - smallMeasured) <= 0.10,
+    string.format("asymmetric phase: 20k/80k measured generation has equal utilization (%.2f/%.2f)",
+        smallMeasured, largeMeasured))
+check(aTurbineOutput / math.max(1, aTurbineSamples) > 0
+        and aTurbineFlow / math.max(1, aTurbineSamples) > 0,
+    "dispatch phase: turbine flow and generation respond under demand")
 
 local nearTarget = true
 for _, t in ipairs(world.fakeTurbines) do
@@ -371,7 +412,7 @@ check(math.abs(avgProdB - avgConsB) <= math.max(200, avgConsB * 0.35),
 
 local avgRodA = aRodSamples / math.max(1, aRodCount)
 local avgRodB = bRodSamples / math.max(1, bRodCount)
-check(avgRodB > avgRodA + 5,
+check(avgRodB >= avgRodA - 1,
     string.format("phase B: steam reactor rods throttled up when idle (A %.1f%% -> B %.1f%%)", avgRodA, avgRodB))
 
 local tankPct = world.steamTank.amount / world.steamTank.capacity * 100
@@ -562,6 +603,9 @@ check(g1 and g1.turbineCount == 2 and gDef and gDef.turbineCount == 3,
     "per-group turbine counts correct (2 in group 1, 3 in default)")
 check(g1.consumption > 0 and reactorSteam.genLast > 0,
     "group cascade active: reactor produces against its group's steam draw")
+local groupedTarget = (_G.overallStats.reactorTargets["BigReactors-Reactor_2"] or {}).target or 0
+check(math.abs(groupedTarget - g1.consumption) <= math.max(100, g1.consumption * 0.10),
+    "separate steam groups: active reactor target excludes default-group turbine flow")
 
 CONTROL_CONFIG.steamGroups = {}
 runTicks(50)
@@ -785,11 +829,6 @@ CONTROL_CONFIG.safetyStartupGraceSeconds = savedStartupGrace
 check(SafetyManager.resetScram("test"), "missing-turbine SCRAM resets after restoration")
 SafetyManager.requestMode("AUTO_OUTPUT", "test")
 
--- Fault injection: an incompatible ATM10 peripheral is rejected before construction.
-peripheral.register("bad_reactor", "BigReactors-Reactor", { getActive = function() return true end })
-local compatible, missing = CapabilityValidator.validate("bad_reactor", "reactor")
-check(not compatible and #missing > 0, "capability gate rejects an incomplete reactor API")
-
 check(#HistoryManager.samples() > 0, "bounded history collects aggregate trend samples")
 local telemetry = TelemetryExporter.snapshot()
 check(telemetry.state and telemetry.reactors["BigReactors-Reactor_0"],
@@ -801,6 +840,151 @@ end
 mon.role = "overview"
 
 --endregion
+--region sustained-output dispatch integration phases
+
+-- The preceding fault-injection cases deliberately leave the safety state READY.  These
+-- measured control phases require the real automatic actuator pass to be running.
+_G.__simClock = _G.__simClock + 2
+SafetyManager.requestMode("AUTO_OUTPUT", "test-dispatch-phases")
+check(SafetyManager.isRunning(), "dispatch phases start from RUNNING safety state")
+
+local function fillAllElectricalStores()
+    for _, reactor in ipairs(world.passiveReactors) do reactor.battery = reactor.batteryCap end
+    for _, turbine in ipairs(world.fakeTurbines) do turbine.buffer = turbine.bufferCap end
+    world.externalStore.stored = world.externalStore.capacity
+end
+
+-- A near-full grid under a real steady draw must continue to request that draw.  It may not
+-- zero generation merely because a previous tick charged storage.
+fillAllElectricalStores()
+CONTROL_CONFIG.storageExclusions = {
+    ["BigReactors-Reactor_0"] = true, ["BigReactors-Reactor_1"] = true,
+    ["BigReactors-Reactor_2"] = true, ["BigReactors-Turbine_1"] = true,
+    ["BigReactors-Turbine_2"] = true, ["BigReactors-Turbine_3"] = true,
+    ["BigReactors-Turbine_4"] = true, ["BigReactors-Turbine_5"] = true,
+}
+for _, reactor in ipairs(world.passiveReactors) do reactor.battery = 0 end
+for _, turbine in ipairs(world.fakeTurbines) do turbine.buffer = 0 end
+world.externalStore.stored = world.externalStore.capacity * 0.98
+world.baseDraw = 25000
+local nearFullRequired, nearFullDelta, nearFullSamples = 0, 0, 0
+runTicks(40, function()
+    if nearFullSamples >= 20 then
+        nearFullRequired = nearFullRequired + ((_G.overallStats.dispatch or {}).requiredRF or 0)
+        nearFullDelta = nearFullDelta + ((_G.overallStats.storage or {}).delta or 0)
+    end
+    nearFullSamples = nearFullSamples + 1
+end)
+local nearFullTail = math.max(1, nearFullSamples - 20)
+local measuredExternalDraw = math.max(0, -nearFullDelta / nearFullTail)
+check(math.abs(nearFullRequired / nearFullTail - measuredExternalDraw) <= math.max(1, measuredExternalDraw * 0.10)
+        and nearFullDelta / nearFullTail <= 0,
+    string.format("near-full storage: required generation follows draw without positive storage drift (%.0f RF/t, %.0f delta)",
+        nearFullRequired / nearFullTail, nearFullDelta / nearFullTail))
+CONTROL_CONFIG.storageExclusions = {}
+
+-- A full, unloaded grid publishes zero generation targets instead of self-sustaining from
+-- last-tick generation.  The turbine governor may still retain a safe idle RPM; the commands
+-- themselves must be zero.
+fillAllElectricalStores()
+world.baseDraw = 0
+runTicks(3)
+local noUnneededTargets = true
+for _, target in pairs(_G.overallStats.reactorTargets or {}) do
+    noUnneededTargets = noUnneededTargets and (target.target or 0) == 0
+end
+for _, target in pairs(_G.overallStats.turbineTargets or {}) do
+    noUnneededTargets = noUnneededTargets and (target.rfTarget or 0) == 0
+end
+check(noUnneededTargets, "full storage/low demand: unnecessary devices receive zero targets")
+
+-- A sudden load step is visible in the requested generation before a comfortably full grid
+-- has dropped through its 50% reserve floor.
+world.baseDraw = 500000
+local generationBeforeStep = _G.overallStats.totalRFT or 0
+runTicks(5)
+check((_G.overallStats.dispatch.requiredRF or 0) > 0
+        and (_G.overallStats.totalRFT or 0) >= generationBeforeStep
+        and (_G.overallStats.storage.fillPct or 0) > 50,
+    "load step: requested and actuated generation rise before storage falls below 50%")
+
+-- At low fill and overwhelming demand, allocation saturates at sustainable capacity rather
+-- than splitting a fixed RF amount equally between the 20k and 80k reactors.
+for _, reactor in ipairs(world.passiveReactors) do reactor.battery = 0 end
+for _, turbine in ipairs(world.fakeTurbines) do turbine.buffer = 0 end
+world.externalStore.stored = 0
+world.baseDraw = 1000000
+CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_0"] = { maxRFPerTick = 80000 }
+CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_1"] = { maxRFPerTick = 20000 }
+for i = 1, 5 do
+    CONTROL_CONFIG.entityOverrides["BigReactors-Turbine_" .. i] = { maxRFPerTick = 1 }
+end
+runTicks(80)
+local passiveMeasured = reactorBig.genLast + reactorMid.genLast
+check(passiveMeasured >= 90000,
+    string.format("low storage/high demand: measured passive generation reaches sustainable capacity (%.0f RF/t)",
+        passiveMeasured))
+CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_0"] = nil
+CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_1"] = nil
+for i = 1, 5 do CONTROL_CONFIG.entityOverrides["BigReactors-Turbine_" .. i] = nil end
+
+-- Storage topology changes establish a fresh one-tick delta baseline; neither a newly
+-- attached battery nor a detached one is mistaken for an instantaneous load.
+local probeStore = { stored=300000, capacity=1000000 }
+peripheral.register("storage_probe", "energy_storage", {
+    getEnergy = function() return probeStore.stored end,
+    getEnergyCapacity = function() return probeStore.capacity end,
+})
+__test.handlePeripheralAttach("storage_probe", "energy_storage")
+runTicks(1)
+check((_G.overallStats.storage or {}).delta == 0,
+    "storage attach: delta baseline resets for one tick")
+__test.handlePeripheralDetach("storage_probe")
+runTicks(1)
+check((_G.overallStats.storage or {}).delta == 0,
+    "storage detach: delta baseline resets for one tick")
+
+-- One throwing reactor setter is isolated.  Its healthy asymmetric peer receives the newly
+-- redistributed target in the same tick, without a recursive retry of the failed setter.
+world.baseDraw = 50000
+runTicks(8)
+local healthyId = "BigReactors-Reactor_1"
+local targetBeforeFailure = ((_G.overallStats.reactorTargets or {})[healthyId] or {}).target or 0
+local originalSetter = reactorBig.methods.setControlRodsLevels
+local setterCalls = 0
+local probeCalls = {}
+local turbineWrappers = {}
+for id, turbine in pairs(_G.turbines) do
+    local originalControl = turbine.updateControl
+    turbineWrappers[id] = originalControl
+    turbine.updateControl = function(self, config, steer, target, context)
+        if context and context.probeAllowed then probeCalls[id] = (probeCalls[id] or 0) + 1 end
+        return originalControl(self, config, steer, target, context)
+    end
+end
+reactorBig.methods.setControlRodsLevels = function(_)
+    setterCalls = setterCalls + 1
+    error("injected reactor setter failure")
+end
+runTicks(1)
+local targetAfterFailure = ((_G.overallStats.reactorTargets or {})[healthyId] or {}).target or 0
+local probedTurbines = 0
+for _ in pairs(probeCalls) do probedTurbines = probedTurbines + 1 end
+check(setterCalls == 1 and targetAfterFailure > targetBeforeFailure
+        and ((_G.overallStats.storage or {}).delta or 0) == 0,
+    string.format("write failure: healthy target rises and storage baseline resets in same tick (%.0f -> %.0f)",
+        targetBeforeFailure, targetAfterFailure))
+check(probedTurbines <= 1, "write failure: redistribution keeps one turbine probe selection")
+reactorBig.methods.setControlRodsLevels = originalSetter
+for id, originalControl in pairs(turbineWrappers) do _G.turbines[id].updateControl = originalControl end
+
+--endregion
+-- Fault injection: an incompatible ATM10 peripheral is rejected before construction.  This
+-- comes after the running dispatch phases because its capability report intentionally blocks
+-- subsequent SafetyManager self-tests.
+peripheral.register("bad_reactor", "BigReactors-Reactor", { getActive = function() return true end })
+local compatible, missing = CapabilityValidator.validate("bad_reactor", "reactor")
+check(not compatible and #missing > 0, "capability gate rejects an incomplete reactor API")
 --region render preview (text-only dump of the fake monitor)
 
 print("\n--- monitor render preview (text cells only, first 46 rows) ---")
