@@ -179,7 +179,10 @@ local Reactor = {
 
         self.activelyCooled = self.isActivelyCooled()
         self.active = self.getActive()
-        self.lastRFT = self.getLastRFT()
+        local energy = self.getEnergyStats()
+        self.lastRFT = energy.energyProducedLastTick or 0
+        self.energyStored = energy.energyStored or 0
+        self.energyCapacity = energy.energyCapacity or 0
         self.rodLevel = self.getRodLevel()
         self.fuelUsage = self.getFuelUsage()
         self.waste = self.getWaste()
@@ -446,7 +449,7 @@ local function newExtremeReactor(id)
 
         -- Peripheral bindings (Modernized Object API).
         getFuelUsage = function () return extremeReactor.getFuelStats().fuelConsumedLastTick / 1000 end, -- mB -> B
-        getLastRFT = function () return extremeReactor.getEnergyStats().energyProducedLastTick end,
+        getEnergyStats = extremeReactor.getEnergyStats,
         getFuelTemp = extremeReactor.getFuelTemperature,
         getCaseTemp = extremeReactor.getCasingTemperature,
         getRodLevel = function () return calculateAverage(extremeReactor.getControlRodsLevels()) end,
@@ -472,6 +475,7 @@ local function newExtremeReactor(id)
     end
 
     -- Prime all stats/averages immediately so consumers never see nil fields.
+    reactorInstance.lastUpdatedTick = -1
     local currentTickNumber = math.floor(os.clock() * 20)
     reactorInstance:update(currentTickNumber)
     return reactorInstance

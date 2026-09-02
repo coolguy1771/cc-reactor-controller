@@ -299,6 +299,7 @@ local function newExtremeTurbine(id)
     instance.lastWrittenSteamCap = 0
     instance.lastWrittenCoils = true
 
+    instance.lastUpdatedTick = -1
     local currentTickNumber = math.floor(os.clock() * 20)
     instance:update(currentTickNumber)
     return instance
