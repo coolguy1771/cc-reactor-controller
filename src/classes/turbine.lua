@@ -32,6 +32,12 @@ local function rpmLimits(config, turbineId)
     return rpmMin, rpmMax
 end
 
+local function finiteLimit(value, fallback)
+    value = tonumber(value)
+    if not value or value ~= value or value == math.huge or value == -math.huge then value = fallback end
+    return value
+end
+
 -- PI error: below band -> push up to rpmMin; above band -> pull down; inside -> hold midpoint.
 local function rpmBandError(avgRpm, rpmMin, rpmMax)
     if avgRpm < rpmMin then
@@ -160,13 +166,15 @@ local Turbine = {
     ---@param self Turbine
     ---@param config table CONTROL_CONFIG
     ---@param steer boolean|nil nil/true = full pass, false = governor only
-    updateControl = function(self, config, steer)
+    updateControl = function(self, config, steer, target, context)
         if not self.active then
             return
         end
 
         self.steamWriteThreshold = config.steamWriteThreshold or 5
 
+        local hasDispatchTarget = target ~= nil
+        target, context = target or {}, context or {}
         local rpm = self.rpm                 -- instantaneous for safety
         local avgRpm = self.averageRPM       -- smoothed for the PI
 
@@ -179,6 +187,10 @@ local Turbine = {
         -- DANGER: high/uncapped RPM can explode turbines in-game.
         local flywheelArmedIdle = (config.flywheelMode == true) and (self.desiredCoils == false)
         local rpmMin, rpmMax = rpmLimits(config, self.id)
+        local override = config.entityOverrides and config.entityOverrides[self.id]
+        local absoluteLimit = finiteLimit(override and override.sustainedOverspeedLimitRPM,
+            finiteLimit(target.rpmLimit, finiteLimit(config.sustainedOverspeedLimitRPM, rpmMax)))
+        if absoluteLimit < rpmMin then absoluteLimit = rpmMin end
         local ceiling = config.rpmMax or config.ceilingRPM or rpmMax
         local safe = config.safeRPM or math.max(rpmMin, ceiling - 10)
         if flywheelArmedIdle then
@@ -190,6 +202,14 @@ local Turbine = {
                 ceiling = math.huge      -- uncapped: no governor limit while armed+idle
                 safe = math.huge
             end
+        end
+
+        if rpm >= absoluteLimit then
+            self:writeSteam(0)
+            self:writeCoils(true)
+            self.pid.integral = 0
+            self.controlStatus = "governor"
+            return
         end
 
         -- 1) SAFETY GOVERNOR -- highest priority, ignores the PI. Runs on every tick.
@@ -208,6 +228,39 @@ local Turbine = {
 
         if steer == false then
             return
+        end
+
+        if hasDispatchTarget then
+        self.dispatchTarget = target
+        if (target.rfTarget or 0) <= 0 then
+            self.desiredCoils = false
+            self:writeCoils(false)
+            self.pid.integral = 0
+            self:writeSteam(0)
+            self.controlStatus = context.storageFull and "storage-full" or "idle"
+            return
+        end
+        self.desiredCoils = true
+        self:writeCoils(true)
+        local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
+        local targetRPM = math.min(self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin, absoluteLimit - 10)
+        local dispatchErr = rpmBandError(avgRpm, targetRPM, targetRPM)
+        self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, self.flowMaxMax)
+        self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, self.flowMaxMax))
+        self.controlStatus = "dispatch"
+        if context.steady and not context.transient and not context.governorBraking and
+            not context.flywheelDeceleration and not context.storageFull and self.coilsEngaged then
+            local bin = math.floor((avgRpm or 0) / 100) * 100
+            self.rpmBinObservations = self.rpmBinObservations or {}
+            local b = self.rpmBinObservations[bin] or {samples=0, rf=0}
+            b.samples = math.min((b.samples or 0) + 1, 20)
+            b.rf = ((b.rf or 0) * (b.samples - 1) + (self.energyProduced or 0)) / b.samples
+            self.rpmBinObservations[bin] = b
+            if (self.bestSustainedRPM or 0) == 0 or b.rf > (self.bestContinuousRF or 0) then
+                self.bestContinuousRF, self.bestSustainedRPM = b.rf, bin
+            end
+        end
+        return
         end
 
         -- Per-turbine overrides (entityOverrides).
