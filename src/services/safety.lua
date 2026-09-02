@@ -107,7 +107,11 @@ local function requestMode(mode, source)
         for _, reactor in pairs(_G.reactors) do pcall(reactor.setActive, true); reactor.active = true end
         for _, turbine in pairs(_G.turbines) do pcall(function() turbine:setActive(true) end) end
     end
-    if ConfigUtil then ConfigUtil.writeConfig("control") end
+    -- Auto-start must not persist: writeConfig diffs live vs defaults and will
+    -- delete or replace /overrides if the override file failed to parse.
+    if ConfigUtil and source ~= "auto-start" then
+        ConfigUtil.writeConfig("control")
+    end
     if source ~= "auto-start" then lastOperatorModeAt = now end
     journal("INFO", "mode", "mode changed to " .. mode, { source = source or "local" })
     return true
