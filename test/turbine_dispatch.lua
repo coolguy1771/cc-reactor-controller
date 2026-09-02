@@ -100,3 +100,18 @@ for _, c in ipairs(branchCases) do
   t.setFluidFlowRateMax,t.setInductorEngaged=oldS,oldC
 end
 print("turbine branch failure matrix ok")
+
+local function at(rpm, lim, configLim)
+ t.rpm,t.averageRPM=rpm,rpm; t.lastWrittenSteamCap=-1; t.lastWrittenCoils=nil; t.controlStatus=nil
+ local c={entityOverrides={},rpmMin=1800,rpmMax=2000,safeRPM=1990,ceilingRPM=math.huge,turbineKp=1,turbineKi=0,sustainedOverspeedLimitRPM=configLim or 2400,steamWriteThreshold=5}
+ local ok,err=t:updateControl(c,true,{rfTarget=1,flowTarget=1,rpmLimit=lim},{})
+ return ok,err,t.controlStatus,t.steamCap
+end
+local function checkInvalid(lim) local _,_,s=at(2399,lim,math.huge); assert(s=="dispatch"); local _,_,s2=at(2400,lim,math.huge); assert(s2=="governor") end
+checkInvalid(nil); checkInvalid(0/0); checkInvalid(math.huge); checkInvalid(-math.huge)
+local _,_,s=at(2300,nil,2300); assert(s=="governor")
+local _,_,s2=at(2200,2200,2300); assert(s2=="governor")
+t.rpm,t.averageRPM=2100,2100; cfg.entityOverrides={t={sustainedOverspeedLimitRPM=2100}}
+local _,_,s3=at(2100,2200,2300); assert(s3=="governor")
+cfg.entityOverrides={}
+print("finite limit behavior ok")
