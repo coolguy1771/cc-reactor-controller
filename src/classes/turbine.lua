@@ -249,6 +249,9 @@ local Turbine = {
         self.desiredCoils = true
         local ok, err = self:writeCoils(true); if not ok then return false, err end
         local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
+        if context.probeAllowed and not self.probeBin and config.sustainedOverspeedEnabled ~= false then
+            self.probeBin = math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
+        end
         local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
         local dispatchErr = rpmBandError(avgRpm, targetRPM, targetRPM)
         self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, self.flowMaxMax)
@@ -263,7 +266,7 @@ local Turbine = {
             self.probeSettledFailures = self.probeSettledFailures or 0
             if self.probeBin >= absoluteLimit then self.controlStatus = "probe-limit" end
         end
-        if context.steady and not context.transient and not context.governorBraking and
+        if context.steady and math.abs((avgRpm or 0) - (self.probeBin or avgRpm or 0)) <= 25 and not context.transient and not context.governorBraking and
             not context.flywheelDeceleration and not context.storageFull and self.coilsEngaged then
             local bin = math.floor((avgRpm or 0) / 100) * 100
             self.rpmBinObservations = self.rpmBinObservations or {}
