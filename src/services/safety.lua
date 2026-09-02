@@ -6,6 +6,8 @@ local initialized = false
 local autoStartAttempted = false
 local lastOperatorModeAt = -math.huge
 local runningSince = nil
+local storageTrustworthy = nil
+local degradedDevices = {}
 
 local function journal(level, code, message, data)
     if EventJournal then EventJournal.record(level, code, message, data) end
@@ -35,9 +37,39 @@ local function selfTest()
         if not peripheral.isPresent or not peripheral.isPresent(id) then failures[#failures + 1] = "missing " .. id end
     end
     for id, report in pairs(CapabilityValidator and CapabilityValidator.reports() or {}) do
-        if not report.ok then failures[#failures + 1] = "incompatible " .. id end
+        local mode = report.mode or (report.ok and "control" or "rejected")
+        if mode ~= "control" then
+            degradedDevices[id] = mode
+            if AlarmManager then
+                AlarmManager.raise("capability:" .. id, mode == "monitor-only" and "warning" or "critical",
+                    "device is " .. mode, id, mode == "rejected")
+            end
+        else
+            degradedDevices[id] = nil
+        end
     end
     return #failures == 0, failures
+end
+
+-- Storage is advisory input, never a safety override. Controller/storage code has already
+-- removed invalid external sources and reset its topology baseline; consume that trust signal
+-- so an empty aggregate cannot manufacture reserve demand or clear a SCRAM.
+local function evaluateStorageTrust()
+    local storage = _G.overallStats and _G.overallStats.storage
+    if not storage then return end
+    if storage.trustworthy == false then
+        storage.reserveFactor = 0
+        storage.rechargeCorrection = 0
+        storage.requiredGeneration = math.max(0, storage.externalDemand or storage.requiredGeneration or 0)
+        if storageTrustworthy ~= false and AlarmManager then
+            AlarmManager.raise("storage_untrusted", "advisory",
+                "no trustworthy storage; using conservative demand estimate", "storage")
+        end
+        storageTrustworthy = false
+    else
+        if storageTrustworthy == false and AlarmManager then AlarmManager.clear("storage_untrusted") end
+        storageTrustworthy = true
+    end
 end
 
 local function desiredRunningMode()
@@ -147,6 +179,8 @@ local function evaluate()
     if not initialized then return initialize() end
     if state == "SCRAM" then forceSafe(); return false end
 
+    evaluateStorageTrust()
+
     local grace = inStartupGrace()
     local activeSteamReactors = 0
     for id, reactor in pairs(_G.reactors) do
@@ -192,4 +226,5 @@ _G.SafetyManager = {
     requestMode=requestMode, isRunning=isRunning,
     state=function() return state end, reason=function() return scramReason end,
     selfTest=selfTest, forceSafe=forceSafe,
+    degradedDevices=function() return degradedDevices end,
 }

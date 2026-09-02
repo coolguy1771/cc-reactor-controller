@@ -59,7 +59,7 @@ local function new(id, energyStoredFunction, energyCapacityFunction)
         energyStoredThisTick = 0,
         energyStoredLastTickValues = Deque.new(),
         energyStoredThisTickValues = Deque.new(),
-        lastUpdatedTick = 0,
+        lastUpdatedTick = -1,
         capacity = 0,
         getEnergyStored = energyStoredFunction,
         getEnergyCapacity = energyCapacityFunction,

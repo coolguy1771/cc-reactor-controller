@@ -8,6 +8,15 @@ local BTN_GAP = 1           -- gap between buttons
 local CARD_W = 25           -- outer card width (incl. border)
 local CARD_H = 13           -- outer card height (incl. border)
 local GAP = 1               -- gap between cards
+-- CC:Tweaked 4x4 advanced monitor at scale 0.5 is 79x52; verbose labels overflow it.
+local COMPACT_WIDTH = 120
+local SHORT_LABELS = {
+    Auto = "Auto", Rctrs = "Reactors", Turbs = "Turbines", Fly = "Flywheel",
+    Opt = "Optimize", Calib = "Calibrate", Prev = "Prev", Next = "Next",
+    View = "View", Ack = "Ack", Reset = "Reset",
+    ["RPM-"] = "RPM-", ["RPM+"] = "RPM+", ["Buf-"] = "Buf-", ["Buf+"] = "Buf+",
+    ["Coil-"] = "Coil-", ["Coil+"] = "Coil+", ["Tick-"] = "Tick-", ["Tick+"] = "Tick+",
+}
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -53,6 +62,30 @@ local function groupLabel(groupId)
     if not _G.overallStats.hasSteamGroups then return "" end
     if type(groupId) == "number" then return "G" .. groupId end
     return ""
+end
+
+local function capacitySource(device)
+    local configured
+    local key = device.activelyCooled and "maxSteamPerTick" or "maxRFPerTick"
+    if getEntitySetting then pcall(function() configured = getEntitySetting(device.id, key) end) end
+    if type(configured) == "number" and configured > 0 then return "configured" end
+    if device.capacityKnown then return "learned" end
+    return "observing"
+end
+
+local function dispatchFor(id)
+    local d = _G.overallStats.dispatch or {}
+    return (d.reactors and d.reactors[id]) or (d.turbines and d.turbines[id]) or {}
+end
+
+local function targetValue(target)
+    return target.target or target.rfTarget or 0
+end
+
+local function statusOf(device)
+    local status = device.controlStatus
+    if status == nil then status = device.active and "active" or "idle" end
+    return string.upper(tostring(status))
 end
 
 --region primitives
@@ -146,31 +179,19 @@ local function drawReactorCard(mon, ox, oy, reactor)
     drawText(mon, rodLine, ix, iy + 3, colors.black, colors.white)
     drawHBar(mon, ix, iy + 4, iw, rod, colors.yellow)
 
-    -- Temperatures.
-    drawText(mon, string.format("Case %4dC  Fuel %4dC",
-        math.floor((reactor.averageCaseTemp or 0) + 0.5),
-        math.floor((reactor.averageFuelTemp or 0) + 0.5)), ix, iy + 6, colors.black, colors.lightBlue)
+    local target = dispatchFor(reactor.id)
+    local actual = reactor.activelyCooled and (reactor.averageSteamProductionRate or 0) or (reactor.averageLastRFT or 0)
+    local requested = targetValue(target)
+    local capacity = reactor.activelyCooled and (reactor.capacitySteam or 0) or (reactor.capacityRF or 0)
+    local utilization = capacity > 0 and actual / capacity * 100 or 0
+    drawText(mon, "Target " .. fmt(requested), ix, iy + 6, colors.black, colors.white)
+    drawText(mon, "Actual " .. fmt(actual), ix, iy + 7, colors.black, colors.white)
+    drawText(mon, string.format("Util %4.1f%% %s", utilization, capacitySource(reactor)), ix, iy + 8, colors.black, colors.lightBlue)
 
-    -- Primary output (replaced by a calibration progress readout during a sweep, or an
-    -- idle notice when merit-order dispatch has parked this reactor for efficiency).
-    local dispatch = _G.overallStats.dispatchTargets
-    local dispatchTarget = dispatch and dispatch[reactor.id]
-    if calProg then
-        drawText(mon, string.format("Calibrating %3d%%", math.floor(calProg * 100 + 0.5)),
-            ix, iy + 8, colors.black, colors.magenta)
-    elseif dispatchTarget ~= nil and dispatchTarget <= 0.5 then
-        drawText(mon, "Idled by efficiency", ix, iy + 8, colors.black, colors.lightBlue)
-    elseif steam then
-        drawText(mon, "Steam " .. string.format("%5d", math.floor(reactor.averageSteamProductionRate + 0.5)) .. " mB/t",
-            ix, iy + 8, colors.black, colors.cyan)
-    else
-        drawText(mon, "Gen   " .. fmt(reactor.averageLastRFT) .. " RF/t", ix, iy + 8, colors.black, colors.green)
-    end
-
-    drawText(mon, "Fuel  " .. string.format("%6.3f", reactor.averageFuelUsage or 0) .. " B/t",
-        ix, iy + 9, colors.black, colors.orange)
-    drawText(mon, "Waste " .. string.format("%6d", math.floor(reactor.waste or 0)) .. " mB",
-        ix, iy + 10, colors.black, colors.orange)
+    drawText(mon, "Status " .. statusOf(reactor), ix, iy + 9, colors.black,
+        statusOf(reactor) == "DEGRADED" and colors.red or colors.lime)
+    drawText(mon, string.format("Fuel %.3f Waste %d", reactor.averageFuelUsage or 0,
+        math.floor(reactor.waste or 0)), ix, iy + 10, colors.black, colors.orange)
 end
 
 ---@param turbine Turbine
@@ -231,21 +252,29 @@ local function drawTurbineCard(mon, ox, oy, turbine)
         drawText(mon, "Target " .. target .. "  Max " .. gaugeCeiling, ix, iy + 2, colors.black, colors.lightGray)
     end
 
-    -- Power out.
-    drawText(mon, "Power " .. fmt(turbine.averageEnergyProduced) .. " RF/t", ix, iy + 4, colors.black, colors.green)
+    local dispatch = dispatchFor(turbine.id)
+    local actual = turbine.averageEnergyProduced or 0
+    local requested = targetValue(dispatch)
+    local capacity = turbine.capacityRF or 0
+    local utilization = capacity > 0 and actual / capacity * 100 or 0
+    drawText(mon, "Target " .. fmt(requested), ix, iy + 4, colors.black, colors.white)
+    drawText(mon, "Actual " .. fmt(actual), ix, iy + 5, colors.black, colors.white)
+    drawText(mon, string.format("Util %4.1f%% %s", utilization, capacitySource(turbine)), ix, iy + 3, colors.black, colors.lightBlue)
 
     -- Steam in (actual flow vs cap).
     drawText(mon, string.format("Steam %5d/%5d mB/t",
-        math.floor(turbine.averageSteamFlow + 0.5), turbine.steamCap or 0), ix, iy + 5, colors.black, colors.cyan)
+        math.floor(turbine.averageSteamFlow + 0.5), turbine.steamCap or 0), ix, iy + 6, colors.black, colors.cyan)
 
     -- Coils state.
+    drawText(mon, "Status " .. statusOf(turbine), ix, iy + 7, colors.black,
+        statusOf(turbine) == "DEGRADED" and colors.red or colors.lime)
     if turbine.coilsEngaged then
-        drawText(mon, "Coils: generating power", ix, iy + 7, colors.black, colors.lime)
+        drawText(mon, "Coils: generating power", ix, iy + 8, colors.black, colors.lime)
     elseif armedIdle then
-        drawText(mon, string.format("Flywheel spin %d", math.floor(rpm + 0.5)), ix, iy + 7, colors.black, colors.magenta)
+        drawText(mon, string.format("Flywheel spin %d", math.floor(rpm + 0.5)), ix, iy + 8, colors.black, colors.magenta)
     else
         drawText(mon, string.format("Coils idle, hold %d-%d", rpmMin, rpmMax),
-            ix, iy + 7, colors.black, colors.lightGray)
+            ix, iy + 8, colors.black, colors.lightGray)
     end
 
     -- Own internal buffer = the demand signal.
@@ -275,24 +304,35 @@ local function drawHeader(mon, width, page, pages)
     drawText(mon, string.format("Reactors:%d  Turbines:%d", s.passiveReactorCount + s.activeReactorCount, s.turbineCount),
         width - 21, 1, colors.gray, colors.yellow)
 
-    drawText(mon, string.format("Grid %5.1f%%   Generating %s RF/t   Drain %s RF/t",
-        gridPct, fmt(s.totalRFT), fmt(s.rfLost)), 2, 2, colors.gray, colors.white)
-
-    drawText(mon, string.format("Steam %d/%d mB/t   Fuel %6.3f B/t   Waste %d mB",
-        math.floor(s.steamProductionRate + 0.5), math.floor(s.steamConsumedLastTick + 0.5),
-        s.fuelUsage, math.floor(s.waste)), 2, 3, colors.gray, colors.cyan)
+    local storage, dispatch = s.storage or {}, s.dispatch or {}
+    drawText(mon, string.format("Demand %s  Requested %s  Available %s",
+        fmt(storage.externalDemand or dispatch.requiredRF), fmt(dispatch.requiredRF), fmt(dispatch.availableRF)),
+        2, 2, colors.gray, colors.white)
+    local charge = storage.delta or 0
+    local chargeText = (charge >= 0 and "+" or "") .. fmt(charge)
+    drawText(mon, string.format("Stored %s/%s  Fill %5.1f%%  Charge %s",
+        fmt(storage.stored or s.storedThisTick), fmt(storage.capacity or s.capacity),
+        storage.fillPct or gridPct, chargeText), 2, 3, colors.gray, colors.cyan)
 
     if pages > 1 then
         drawText(mon, string.format("Page %d of %d", page, pages), width - 13, 3, colors.gray, colors.yellow)
     end
 
     -- Verbose current-settings line (the bordered +/- buttons below change these).
-    local settings = string.format(
-        "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%% (+%d RPM)    Interval %d tick    Optimize: %s",
-        cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
-        cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
-        cfg.coilsRpmHeadroom or 100,
-        cfg.controlIntervalTicks or 1, cfg.optimizeMode == "efficiency" and "Efficiency" or "Output")
+    local opt = cfg.optimizeMode == "efficiency" and "Efficiency" or "Output"
+    local settings
+    if width < COMPACT_WIDTH then
+        settings = string.format("RPM %d-%d  Buf %d-%d%%  Coil %d-%d%%  Int %d  %s",
+            cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
+            cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
+            cfg.controlIntervalTicks or 1, opt)
+    else
+        settings = string.format(
+            "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%% (+%d RPM)    Interval %d tick    Optimize: %s",
+            cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
+            cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
+            cfg.coilsRpmHeadroom or 100, cfg.controlIntervalTicks or 1, opt)
+    end
     drawText(mon, truncate(settings, width - 2), 2, 4, colors.gray, colors.white)
 
     local alarmCount, worst = AlarmManager and AlarmManager.summary() or 0, nil
@@ -459,6 +499,8 @@ local Monitor = {
             }
             for _, line in ipairs(lines) do drawText(self.mon, line, 2, y, colors.black, colors.lightBlue); y = y + 1 end
         end
+        local ids = (_G.overallStats.storage or {}).sourceIDs or {}
+        drawText(self.mon, "Storage IDs " .. (#ids > 0 and table.concat(ids, ",") or "none"), 2, y, colors.black, colors.cyan); y = y + 1
         drawText(self.mon, "Touch this page again to return", 2, y + 1, colors.black, colors.yellow)
     end,
 
@@ -474,14 +516,15 @@ local Monitor = {
                 x = 1
                 y = y + BTN_H + BTN_GAP
             else
-                local w = #spec.label + 4      -- 1 border + 1 pad on each side of the label
+                local text = (width < COMPACT_WIDTH and SHORT_LABELS[spec.name]) or spec.label
+                local w = #text + 4      -- 1 border + 1 pad on each side of the label
                 if x > 1 and (x + w - 1) > width then
                     x = 1
                     y = y + BTN_H + BTN_GAP
                 end
                 local x2, y2 = x + w - 1, y + BTN_H - 1
                 if x2 <= width and y2 <= self.size.y then
-                    local label = buttonLabel(spec.name, spec.label, w, BTN_H)
+                    local label = buttonLabel(spec.name, text, w, BTN_H)
                     local ok = pcall(function()
                         self.touch:add(label, spec.func, x, y, x2, y2, spec.off, spec.on)
                     end)

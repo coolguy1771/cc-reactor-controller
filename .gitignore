@@ -4,3 +4,4 @@ overrides/
 state/
 .DS_Store
 .remember/
+.worktrees/

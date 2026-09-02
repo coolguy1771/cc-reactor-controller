@@ -31,6 +31,13 @@ local function rpmLimits(config, turbineId)
     if rpmMax < rpmMin then rpmMax = rpmMin end
     return rpmMin, rpmMax
 end
+local DEFAULT_SUSTAINED_LIMIT = 2400
+
+local function finiteLimit(value, fallback)
+    value = tonumber(value)
+    if not value or value ~= value or value == math.huge or value == -math.huge then value = fallback end
+    return value
+end
 
 -- PI error: below band -> push up to rpmMin; above band -> pull down; inside -> hold midpoint.
 local function rpmBandError(avgRpm, rpmMin, rpmMax)
@@ -88,6 +95,7 @@ local Turbine = {
         self.averageRPM = self.rpmValues:average()
         self.averageEnergyProduced = self.energyProducedValues:average()
         self.averageSteamFlow = self.steamFlowValues:average()
+        return true
     end,
 
     ---@param self Turbine
@@ -110,6 +118,19 @@ local Turbine = {
         self.lastUpdatedTick = currentTickNumber
     end,
 
+    observeCapacity = function(self, target, context, config)
+        local o = getEntitySetting(self.id, "maxRFPerTick")
+        if o then self.capacityRF, self.capacityKnown = o, true; return {value=o, known=true} end
+        if getEntitySetting(self.id, "capacityLearning") == false then return {value=self.capacityRF, known=self.capacityKnown} end
+        context = context or {}
+        local blocked = context.topologyChanged or context.calibration or context.scram or context.governorBraking or context.startupGrace or context.storageFull or context.flywheelDeceleration
+        local result = Dispatcher.learnCapacity({value=self.capacityRF or 1, known=self.capacityKnown == true, misses=self.capacityMisses or 0}, {actual=self.energyProduced, target=target, steady=self.coilsEngaged and context.steady == true and not blocked, transient=context.transient}, config)
+        self.capacityRF, self.capacityKnown = math.max(1, result.value), result.known
+        self.capacityMisses = result.misses
+        if self.coilsEngaged and self.steamFlow > 0 and context.steady and not blocked and not context.transient then self.rfPerSteam = self.energyProduced / self.steamFlow end
+        return result
+    end,
+
     -- Peripheral-write helpers: only hit the peripheral when the value actually changes,
     -- to keep 20Hz control from spamming the server with method calls.
 
@@ -119,20 +140,24 @@ local Turbine = {
         amount = math.floor(clamp(amount, 0, self.flowMaxMax) + 0.5)
         local forceEdge = (amount == 0 or amount == self.flowMaxMax)
         if forceEdge or math.abs(amount - self.lastWrittenSteamCap) >= self.steamWriteThreshold then
-            self.setFluidFlowRateMax(amount)
+            local ok, err = pcall(self.setFluidFlowRateMax, amount)
+            if not ok then self.controlStatus = "WRITE_FAILED"; return false, err end
             self.lastWrittenSteamCap = amount
             self.steamCap = amount
         end
+        return true
     end,
 
     ---@param self Turbine
     ---@param engaged boolean
     writeCoils = function(self, engaged)
         if engaged ~= self.lastWrittenCoils then
-            self.setInductorEngaged(engaged)
+            local ok, err = pcall(self.setInductorEngaged, engaged)
+            if not ok then self.controlStatus = "WRITE_FAILED"; return false, err end
             self.lastWrittenCoils = engaged
             self.coilsEngaged = engaged
         end
+        return true
     end,
 
     ---@param self Turbine
@@ -147,13 +172,15 @@ local Turbine = {
     ---@param self Turbine
     ---@param config table CONTROL_CONFIG
     ---@param steer boolean|nil nil/true = full pass, false = governor only
-    updateControl = function(self, config, steer)
+    updateControl = function(self, config, steer, target, context)
         if not self.active then
             return
         end
 
         self.steamWriteThreshold = config.steamWriteThreshold or 5
 
+        local hasDispatchTarget = target ~= nil
+        target, context = target or {}, context or {}
         local rpm = self.rpm                 -- instantaneous for safety
         local avgRpm = self.averageRPM       -- smoothed for the PI
 
@@ -166,6 +193,10 @@ local Turbine = {
         -- DANGER: high/uncapped RPM can explode turbines in-game.
         local flywheelArmedIdle = (config.flywheelMode == true) and (self.desiredCoils == false)
         local rpmMin, rpmMax = rpmLimits(config, self.id)
+        local override = config.entityOverrides and config.entityOverrides[self.id]
+        local absoluteLimit = finiteLimit(override and override.sustainedOverspeedLimitRPM,
+            finiteLimit(target.rpmLimit, finiteLimit(config.sustainedOverspeedLimitRPM, DEFAULT_SUSTAINED_LIMIT)))
+        if absoluteLimit < rpmMin then absoluteLimit = rpmMin end
         local ceiling = config.rpmMax or config.ceilingRPM or rpmMax
         local safe = config.safeRPM or math.max(rpmMin, ceiling - 10)
         if flywheelArmedIdle then
@@ -179,22 +210,81 @@ local Turbine = {
             end
         end
 
+        if rpm >= absoluteLimit then
+            local ok, err = self:writeSteam(0); if not ok then return false, err end
+            ok, err = self:writeCoils(true); if not ok then return false, err end
+            self.pid.integral = 0
+            self.controlStatus = "governor"
+            return
+        end
+
         -- 1) SAFETY GOVERNOR -- highest priority, ignores the PI. Runs on every tick.
         if rpm >= ceiling then
-            self:writeSteam(0)
-            self:writeCoils(true)            -- engage coils to brake
+            local ok, err = self:writeSteam(0); if not ok then return false, err end
+            ok, err = self:writeCoils(true); if not ok then return false, err end
             self.pid.integral = 0            -- so we don't slam back to full steam
             return
         elseif rpm >= safe then
-            self:writeCoils(true)
+            local ok, err = self:writeCoils(true); if not ok then return false, err end
             local capped = math.min(self.steamCap, self.flowMaxMax * 0.25)
-            self:writeSteam(capped)
+            ok, err = self:writeSteam(capped); if not ok then return false, err end
             self.pid.integral = math.min(self.pid.integral, capped)
             return
         end
 
         if steer == false then
             return
+        end
+
+        if hasDispatchTarget then
+        self.dispatchTarget = target
+        if (target.rfTarget or 0) <= 0 then
+            self.desiredCoils = false
+            local ok, err = self:writeCoils(false); if not ok then return false, err end
+            self.pid.integral = 0
+            ok, err = self:writeSteam(0); if not ok then return false, err end
+            self.controlStatus = context.storageFull and "storage-full" or "idle"
+            return
+        end
+        self.desiredCoils = true
+        local ok, err = self:writeCoils(true); if not ok then return false, err end
+        local maxDispatchFlow = clamp(finiteLimit(target.maxFlow, self.flowMaxMax), 0, self.flowMaxMax)
+        local desiredFlow = clamp(target.flowTarget or 0, 0, maxDispatchFlow)
+        local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
+        local probeEligible = context.probeAllowed and not self.probeStopped and storageBelowTarget and desiredFlow >= self.flowMaxMax and config.sustainedOverspeedEnabled ~= false and context.steady and not context.transient and not context.governorBraking and not context.flywheelDeceleration and not context.storageFull
+        if probeEligible and not self.probeBin then
+            self.probeBin = math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
+        end
+        local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
+        local dispatchErr = rpmBandError(avgRpm, targetRPM, targetRPM)
+        self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, maxDispatchFlow)
+        ok, err = self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, maxDispatchFlow)); if not ok then return false, err end
+        self.controlStatus = "dispatch"
+        local saturated = desiredFlow >= maxDispatchFlow
+        if probeEligible then
+            self.probeBin = self.probeBin or math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
+            self.probeSettledBins = self.probeSettledBins or {}
+            self.probeSettledFailures = self.probeSettledFailures or 0
+            if self.probeBin >= absoluteLimit then self.controlStatus = "probe-limit" end
+        end
+        if context.steady and (not self.probeBin or math.abs((avgRpm or 0) - self.probeBin) <= 25) and not context.transient and not context.governorBraking and
+            not context.flywheelDeceleration and not context.storageFull and self.coilsEngaged then
+            local bin = math.floor((avgRpm or 0) / 100) * 100
+            self.rpmBinObservations = self.rpmBinObservations or {}
+            local b = self.rpmBinObservations[bin] or {samples=0, rf=0}
+            b.samples = math.min((b.samples or 0) + 1, 20)
+            b.rf = ((b.rf or 0) * (b.samples - 1) + (self.energyProduced or 0)) / b.samples
+            self.rpmBinObservations[bin] = b
+            if (self.bestSustainedRPM or 0) == 0 or b.rf > (self.bestContinuousRF or 0) then
+                self.bestContinuousRF, self.bestSustainedRPM = b.rf, bin
+                self.probeSettledFailures = 0
+            elseif (self.probeBin or 0) > 0 and not self.probeSettledBins[bin] then
+                self.probeSettledBins[bin] = true
+                self.probeSettledFailures = (self.probeSettledFailures or 0) + 1
+                if self.probeSettledFailures >= 2 then self.probeStopped = true; self.probeBin = nil else self.probeBin = math.min(self.probeBin + 100, absoluteLimit) end
+            end
+        end
+        return
         end
 
         -- Per-turbine overrides (entityOverrides).
@@ -215,7 +305,7 @@ local Turbine = {
         elseif bufPct >= coilsOffAbove then
             self.desiredCoils = false
         end
-        self:writeCoils(self.desiredCoils)
+        local ok, err = self:writeCoils(self.desiredCoils); if not ok then return false, err end
 
         -- 3a) FLYWHEEL SPIN-UP -- armed + idle: open the throttle fully and let the rotor climb
         --     as high as it can (up to flywheelCeilingRPM if a cap is set; the governor above
@@ -223,7 +313,7 @@ local Turbine = {
         --     PI (when coils engage) start from the right place.
         if config.flywheelMode == true and self.desiredCoils == false then
             self.pid.integral = self.flowMaxMax
-            self:writeSteam(self.flowMaxMax)
+            ok, err = self:writeSteam(self.flowMaxMax); if not ok then return false, err end
             return
         end
 
@@ -234,7 +324,8 @@ local Turbine = {
         end
         self.pid.integral = clamp(self.pid.integral + config.turbineKi * err, 0, self.flowMaxMax)
         local output = clamp(self.pid.integral + config.turbineKp * err, 0, self.flowMaxMax)
-        self:writeSteam(output)
+        ok, err = self:writeSteam(output); if not ok then return false, err end
+        return true
     end,
 }
 
@@ -258,6 +349,8 @@ local function newExtremeTurbine(id)
         coilsEngaged = false,
         desiredCoils = false,
         bladeEfficiency = 0,
+        capacityRF = 1, capacityKnown = false, rfPerSteam = 0,
+        bestSustainedRPM = 0, dispatchTarget = nil,
 
         lastWrittenSteamCap = -1,
         lastWrittenCoils = nil,
@@ -292,13 +385,17 @@ local function newExtremeTurbine(id)
     setmetatable(instance, { __index = Turbine })
 
     -- Fail closed. SafetyManager starts the turbine only after the full controller self-test.
-    instance.setFluidFlowRateMax(0)
-    instance.setInductorEngaged(true)
-    instance.setActivePeripheral(false)
+    local initOk, initErr = pcall(instance.setFluidFlowRateMax, 0)
+    if not initOk then instance.controlStatus, instance.controlError = "WRITE_FAILED", initErr end
+    initOk, initErr = pcall(instance.setInductorEngaged, true)
+    if not initOk then instance.controlStatus, instance.controlError = "WRITE_FAILED", initErr end
+    initOk, initErr = pcall(instance.setActivePeripheral, false)
+    if not initOk then instance.controlStatus, instance.controlError = "WRITE_FAILED", initErr end
     instance.active = false
     instance.lastWrittenSteamCap = 0
     instance.lastWrittenCoils = true
 
+    instance.lastUpdatedTick = -1
     local currentTickNumber = math.floor(os.clock() * 20)
     instance:update(currentTickNumber)
     return instance
