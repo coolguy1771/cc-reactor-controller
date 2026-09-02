@@ -11,6 +11,7 @@ sketch how it fits the current architecture.
 | 4 | Configurable ideal RPM (e.g. 900) | Low | **Implemented** (2026-07) |
 | 5 | Flywheel mode (overspeed idle turbines) | Medium | **Implemented** (2026-07) |
 | 6 | Efficiency calibration + optimize mode | High | **Implemented** (2026-07) |
+| 7 | Storage-aware sustained-output dispatch | High | **Implemented** (2026-09) |
 
 ---
 
@@ -113,3 +114,30 @@ Measure each setup's efficiency and add a setting to choose between **maximize e
 Not yet done (future refinement): per-turbine fuel attribution through the steam network
 (RF/t out per fuel B/t of its group's reactors) for a turbine-level efficiency readout, and
 automatic re-calibration as fuel reactivity/fertility drifts.
+
+## 7. Storage-aware sustained-output dispatch — IMPLEMENTED (ATM10 7.2)
+
+The controller targets maximum sustainable RF/t when demand and storage headroom allow, then tracks
+measured external demand as storage fills. The recharge correction tapers through the
+`storageTargetMin`/`storageTargetMax` band (defaults 50/85%) and is zero at the upper target or full
+storage. Allocation is capacity-weighted, so unequal devices converge on similar utilization; active
+reactor steam is scoped to its configured `steamGroups`.
+
+Defaults are `storageTargetMin = 50`, `storageTargetMax = 85`, `storageReserveGain = 0.25`,
+`dispatchRebalanceThreshold = 0.02`, `capacityLearningRate = 0.05`,
+`sustainedOverspeedEnabled = true`, `sustainedOverspeedLimitRPM = 2400`, and
+`storageExclusions = {}`. Per-entity overrides are `dispatchWeight`, `maxRFPerTick`,
+`maxSteamPerTick`, `maxFlowPerTick`, `sustainedOverspeedLimitRPM`, and `capacityLearning = false`.
+
+Storage sources include internal device buffers once plus valid external pools. Exclude an aliased
+external pool by exact ID in `storageExclusions`; monitor storage IDs expose the resulting topology.
+Topology changes, invalid samples, missing storage, and failed writes are isolated: the baseline is
+reset on topology changes, untrustworthy storage disables reserve correction, and healthy devices are
+redistributed without clearing safety/SCRAM interlocks. Getter sampling remains once per tick and
+setter deadbands remain active.
+
+Monitor and telemetry expose demand, requested/available capacity, stored RF, fill, charge rate,
+per-device target/actual/utilization, capacity source, and degraded/observation status. Sustained
+capacity learning excludes flywheel deceleration and other transient/braking/full-storage samples.
+Flywheel mode remains a separate optional burst feature and is not sustained capacity; above-2000 RPM
+operation can explode turbines in-game.

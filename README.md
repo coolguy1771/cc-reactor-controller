@@ -1,6 +1,7 @@
 # my-reactor-controller
 
-ComputerCraft controller for **Extreme Reactors 2** (MC 1.20.1 Forge, CC:Tweaked), built for an
+ComputerCraft controller for **Extreme Reactors 2** (ATM10 7.2, Minecraft 1.21.1 NeoForge,
+CC:Tweaked), built for an
 arbitrary number of reactors and turbines on one wired network. Fork of
 [Kasra-G/ReactorController](https://github.com/Kasra-G/ReactorController) (the graph-style UI),
 with multi-entity support, full turbine control, and turbine safety added.
@@ -151,6 +152,49 @@ to `/defaults/control.default.conf` with user changes in `/overrides/control.ove
 | `optimizeMode` | `"output"` | `"output"` (max output) or `"efficiency"` (hold rods at the calibrated sweet spot) |
 | `calibrationSettleTicks` | 40 | Ticks held per rod step during an efficiency sweep |
 | `secondsToAverage` | 0.5 | Rolling-average window for smoothed stats |
+
+### Sustained-output dispatch (ATM10 7.2)
+
+Output mode maximizes measured sustainable RF/t when demand and storage headroom permit. As storage
+charges, generation converges on measured external demand plus a bounded recharge correction; it does
+not intentionally overproduce at the full threshold. Reactors and turbines are allocated by their
+own usable (configured or learned) capacity, so unequal devices converge on comparable utilization.
+Active reactors only supply turbines in their configured `steamGroups`.
+
+Defaults are `storageTargetMin = 50`, `storageTargetMax = 85`, `storageReserveGain = 0.25`,
+`dispatchRebalanceThreshold = 0.02`, `capacityLearningRate = 0.05`,
+`sustainedOverspeedEnabled = true`, `sustainedOverspeedLimitRPM = 2400`, and
+`storageExclusions = {}`. In `entityOverrides[id]`, supported dispatch overrides are
+`dispatchWeight`, `maxRFPerTick`, `maxSteamPerTick`, `maxFlowPerTick`,
+`sustainedOverspeedLimitRPM`, and `capacityLearning = false`; existing safety and responsiveness
+overrides remain valid. A per-entity capacity is authoritative and disables learning for that
+capacity.
+
+The monitor reports `Demand`, `Requested`, `Available`, `Stored`, `Charge`, `Target`, and `Actual`,
+plus utilization, capacity source/status, and contributing storage IDs. Internal reactor/turbine
+buffers are counted once. If an external `energy_storage` peripheral aliases the same physical
+buffer, put its exact ID in `storageExclusions`; the monitor list is the double-counting check.
+Invalid or missing storage is excluded and resets the demand baseline. If no trustworthy storage
+remains, reserve correction is disabled and conservative demand tracking continues. A failed device
+write is isolated and healthy devices are redistributed.
+
+Sustained turbine output is continuous coil-engaged operation. It never learns capacity from flywheel
+deceleration, governor braking, startup, calibration, topology changes, or full-storage throttling.
+`sustainedOverspeedLimitRPM` is always finite. `flywheelMode` is a separate optional burst feature
+that banks rotational energy while idle and may exceed 2000 RPM; it is not sustained capacity and
+retains the explicit in-game explosion warning below.
+
+### ATM10 commissioning
+
+1. Set `sustainedOverspeedEnabled = false` and verify each capability report.
+2. Confirm the monitor lists each physical storage pool exactly once; add duplicate IDs to
+   `storageExclusions`.
+3. Apply a load above installed generation and confirm every device reaches at least 90% of its
+   configured or learned sustainable capacity.
+4. Reduce load and confirm storage charges through 50–85%, then generation converges on demand.
+5. Test detach/failure redistribution before unattended operation.
+6. Enable sustained overspeed only after setting a finite per-turbine RPM limit and observing each
+   turbine during its probe.
 
 ### Efficiency calibration + optimize mode
 
