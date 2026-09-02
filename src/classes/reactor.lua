@@ -202,11 +202,11 @@ local Reactor = {
         local disabled = getEntitySetting(self.id, "capacityLearning") == false
         local actual = self.activelyCooled and self.steamProductionRate or self.lastRFT
         local key = self.activelyCooled and "capacitySteam" or "capacityRF"
-        local previous = { value = self[key] or math.max(1, actual), known = self.capacityKnown == true, misses = 0 }
+        local previous = { value = self[key] or math.max(1, actual), known = self.capacityKnown == true, misses = self.capacityMisses or 0 }
         local result = Dispatcher.learnCapacity(previous, {actual=actual, target=target, steady=context and context.steady ~= false, transient=context and context.transient}, {capacityLearningRate=(config and config.capacityLearningRate)})
         if override then result.value, result.known = override, true end
         if disabled then result.value, result.known = previous.value, previous.known end
-        self[key], self.capacityKnown = math.max(1, result.value), result.known
+        self[key], self.capacityKnown, self.capacityMisses = math.max(1, result.value), result.known, result.misses
         return result
     end,
 
@@ -486,6 +486,10 @@ local function newExtremeReactor(id)
             reactorInstance.curve = saved.curve
             reactorInstance.bestEffLevel = saved.bestEffLevel
             reactorInstance.bestEff = saved.bestEff
+            local peak = 1
+            for _, point in pairs(saved.curve) do peak = math.max(peak, point.out or 0) end
+            reactorInstance.capacityRF, reactorInstance.capacitySteam = peak, peak
+            reactorInstance.capacityKnown = true
         end
     end
 

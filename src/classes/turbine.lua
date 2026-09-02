@@ -114,9 +114,12 @@ local Turbine = {
         local o = getEntitySetting(self.id, "maxRFPerTick")
         if o then self.capacityRF, self.capacityKnown = o, true; return {value=o, known=true} end
         if getEntitySetting(self.id, "capacityLearning") == false then return {value=self.capacityRF, known=self.capacityKnown} end
-        local result = Dispatcher.learnCapacity({value=self.capacityRF or 1, known=self.capacityKnown == true}, {actual=self.energyProduced, target=target, steady=self.coilsEngaged and context and context.steady == true, transient=context and context.transient}, config)
+        context = context or {}
+        local blocked = context.topologyChanged or context.calibration or context.scram or context.governorBraking or context.startupGrace or context.storageFull or context.flywheelDeceleration
+        local result = Dispatcher.learnCapacity({value=self.capacityRF or 1, known=self.capacityKnown == true, misses=self.capacityMisses or 0}, {actual=self.energyProduced, target=target, steady=self.coilsEngaged and context.steady == true and not blocked, transient=context.transient}, config)
         self.capacityRF, self.capacityKnown = math.max(1, result.value), result.known
-        if self.coilsEngaged and self.steamFlow > 0 and context and context.steady and not context.transient then self.rfPerSteam = self.energyProduced / self.steamFlow end
+        self.capacityMisses = result.misses
+        if self.coilsEngaged and self.steamFlow > 0 and context.steady and not blocked and not context.transient then self.rfPerSteam = self.energyProduced / self.steamFlow end
         return result
     end,
 

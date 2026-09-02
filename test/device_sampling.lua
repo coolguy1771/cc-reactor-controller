@@ -46,4 +46,8 @@ local before = t.rfPerSteam
 t.coilsEngaged = false; t.steamFlow = 10; t.energyProduced = 100
 t:observeCapacity(100, {steady = true, topologyChanged = false}, {})
 assert(t.rfPerSteam == before, "rfPerSteam learned while coils disengaged")
+local c = {steady=true, topologyChanged=true, calibration=false, scram=false, governorBraking=false, startupGrace=false, storageFull=false, flywheelDeceleration=false}
+t.coilsEngaged=true; t.steamFlow=10; t.energyProduced=100; t.rfPerSteam=1
+t:observeCapacity(100, c, {})
+assert(t.rfPerSteam == 1, "rfPerSteam learned during topology change")
 print("device sampling ok")
