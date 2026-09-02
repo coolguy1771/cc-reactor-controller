@@ -50,8 +50,15 @@ CONTROL_CONFIG.rodWriteThreshold = 100
 local writesBefore = average(prods)
 local writesCount = passiveWrites()
 CONTROL_CONFIG.rodWriteThreshold = 1000
-passive.lastWrittenRodLevel = 50
+passive.pid.integral = 0
+passive.pid.lastError = 0
+passive.pid.Kp = -0.000001
+passive.pid.Ki = 0
+passive.pid.Kd = 0
+passive.lastWrittenRodLevel = 0.1
+passive.averageLastRFT = 200
 local thresholdOK = passive:updateRods({unit="rf", target=100})
+print("threshold", thresholdOK, passive.controlStatus, passiveWrites(), writesCount)
 assert(thresholdOK == true and passive.controlStatus == "TRACKING" and passiveWrites() == writesCount, "rod write threshold did not suppress small change")
 passive.bestEffLevel = 100
 CONTROL_CONFIG.optimizeMode = "efficiency"
