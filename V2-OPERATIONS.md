@@ -10,19 +10,6 @@
 6. Test SCRAM with the reactor unfueled. Confirm the watchdog's asserted redstone signal produces
    the intended hardware shutdown.
 7. Add fuel and press Auto/Reactors On to enter `AUTO_OUTPUT`.
-8. Before unattended operation, complete the ATM10 7.2 sustained-dispatch checklist below.
-
-### ATM10 7.2 sustained-dispatch checklist
-
-1. Start with `sustainedOverspeedEnabled = false` and verify every capability report.
-2. Confirm the monitor lists each physical storage pool exactly once; add duplicate IDs to
-   `storageExclusions`.
-3. Apply load above installed generation; every healthy device should reach at least 90% of its
-   configured or learned sustainable capacity.
-4. Reduce load; verify storage charges through the 50–85% target band and output converges on demand.
-5. Test detach and failed-write redistribution; confirm healthy devices continue operating.
-6. Enable sustained overspeed only with a finite per-turbine `sustainedOverspeedLimitRPM`, then
-   observe each turbine during its probe.
 
 ## Operating states
 
@@ -76,23 +63,6 @@ telemetryAuthHeader = "Bearer replace-me",
 
 The exporter sends aggregate grid/steam state plus each reactor and turbine as JSON. HTTP failures
 raise an advisory alarm without affecting local control.
-
-Monitor and telemetry expose external demand, required/requested and available RF/t, stored RF,
-fill percentage, signed charge/discharge rate, per-device target/actual/utilization, capacity source,
-and degraded/observation status. Internal reactor and turbine buffers are included once; use
-`storageExclusions` when an external pool aliases one of them. Storage topology changes reset the
-demand baseline, and no-trustworthy-storage operation disables recharge correction.
-
-Dispatch defaults are `storageTargetMin = 50`, `storageTargetMax = 85`,
-`storageReserveGain = 0.25`, `dispatchRebalanceThreshold = 0.02`,
-`capacityLearningRate = 0.05`, `sustainedOverspeedEnabled = true`,
-`sustainedOverspeedLimitRPM = 2400`, and `storageExclusions = {}`. Per-entity overrides may set
-`dispatchWeight`, `maxRFPerTick`, `maxSteamPerTick`, `maxFlowPerTick`,
-`sustainedOverspeedLimitRPM`, or `capacityLearning = false`.
-
-Sustained output is demand-matched continuous generation; flywheel mode is a separate burst feature
-and its rotational energy is never counted as sustainable capacity. It may exceed 2000 RPM and can
-explode a turbine in-game. Keep it disabled during commissioning.
 
 ## Tests
 

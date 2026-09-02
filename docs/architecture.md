@@ -1,6 +1,6 @@
 # Architecture
 
-How the controller works, file by file. Written for ATM10 7.2 on Minecraft 1.21.1 NeoForge + Extreme Reactors 2 +
+How the controller works, file by file. Written for MC 1.20.1 Forge + Extreme Reactors 2 +
 CC:Tweaked, using the ER2 **Modernized Object API** (method names verified against the mod
 source, `ZeroNoRyouki/ExtremeReactors2` branch `1.20`).
 
@@ -92,27 +92,6 @@ Responsiveness knobs: `controlIntervalTicks` (steering every N ticks), `rpmDeadb
 RF buffers (passive reactor batteries + turbine buffers). Turbine generation is deliberately
 *excluded* from the generation term: it appears in the buffer delta instead, so when turbines
 cover the load, `rfLost` shrinks and passive reactors throttle down on their own.
-
-### Storage-aware sustained dispatch
-
-Each control tick samples peripherals once and passes immutable values to storage coordination,
-dispatch, safety, actuators, and telemetry. Internal reactor/turbine buffers are counted once;
-external `energy_storage` pools listed in `storageExclusions` are excluded. Attach/detach or invalid
-topology establishes a fresh demand baseline. External demand is inferred from generation minus
-storage delta; reserve correction tapers from `storageTargetMin` to `storageTargetMax` and is zero
-at/above the upper target.
-
-The dispatcher assigns per-ID reactor and turbine targets proportionally to usable capacity, with
-`dispatchWeight` and `maxRFPerTick`/`maxSteamPerTick`/`maxFlowPerTick` overrides taking precedence
-over learned capacity. Active reactor steam targets are scoped to `steamGroups`. Failed samples or
-writes remove only that device and redistribute healthy capacity; safety, SCRAM, thermal,
-steam-buffer, and absolute-RPM interlocks remain higher priority. Monitor and optional JSON telemetry
-consume the same demand, requested/available capacity, storage, charge-rate, target, actual,
-utilization, and degraded/observation values.
-
-Sustained learning accepts only steady continuous operation. Flywheel energy released during braking
-is excluded, and `sustainedOverspeedLimitRPM` is clamped to a finite ceiling. `flywheelMode` remains
-a distinct risky burst mode and is not included in sustained capacity.
 
 ## Module reference
 

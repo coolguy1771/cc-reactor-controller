@@ -19,13 +19,6 @@ _G.turbines = {}
 ---@type table<string, EnergyBuffer>
 _G.energyBuffers = {}
 
--- StorageCoordinator resets its delta baseline whenever this revision changes.  The revision
--- covers every power/storage source, rather than treating a hot-plugged battery as a real load.
-local storageCoordinator = StorageCoordinator and StorageCoordinator.new() or nil
-local topologyRevision = 0
-local unavailableDevices = {}
-local turbineProbeCursor = 0
-
 -- Master on/off states (mapped to the monitor's control buttons).
 _G.btnOn = true        -- reactors
 _G.turbinesOn = true   -- turbines
@@ -59,11 +52,6 @@ _G.overallStats = {
     steamGroups = {},        -- groupId -> per-group steam cascade stats (see updateSteamGroups)
     hasSteamGroups = false,  -- true when >1 group is configured (UI shows group badges)
     dispatchTargets = nil,   -- efficiency mode: reactorID -> assigned generation target (merit order)
-    storage = nil,
-    dispatch = nil,
-    reactorTargets = {},
-    turbineTargets = {},
-    topologyRevision = topologyRevision,
 
     efficiency = function()
         if _G.overallStats.fuelUsage <= 0 then return 0 end
@@ -71,156 +59,10 @@ _G.overallStats = {
     end,
 }
 
-local function sortedIDs(devices)
-    local ids = {}
-    for id in pairs(devices) do ids[#ids + 1] = id end
-    table.sort(ids)
-    return ids
-end
-
-local function configuredCapacity(id, key, fallback)
-    local value = getEntitySetting and getEntitySetting(id, key) or nil
-    if type(value) == "number" and value > 0 then return value end
-    return math.max(1, fallback or 1)
-end
-
-local function positiveFinite(value, fallback)
-    if type(value) == "number" and value > 0 and value == value
-        and value < math.huge then return value end
-    return fallback
-end
-
-local function dispatchWeight(id)
-    return positiveFinite(getEntitySetting and getEntitySetting(id, "dispatchWeight"), 1)
-end
-
-local function dispatchFlowLimit(id, physicalLimit)
-    physicalLimit = math.max(0, physicalLimit or 0)
-    return math.min(physicalLimit, positiveFinite(
-        getEntitySetting and getEntitySetting(id, "maxFlowPerTick"), physicalLimit))
-end
-
--- The device wrappers cache their own batteries during sampling.  Keep those snapshots in the
--- storage model, but do not wrap them again as EnergyBuffer peripherals (which double-counts).
-local function buildStorageSources()
-    local sources = {}
-    for id, reactor in pairs(_G.reactors) do
-        sources[#sources + 1] = { id=id, stored=reactor.energyStored, capacity=reactor.energyCapacity,
-            valid=not unavailableDevices[id] }
-    end
-    for id, turbine in pairs(_G.turbines) do
-        sources[#sources + 1] = { id=id, stored=turbine.energyStored, capacity=turbine.energyCapacity,
-            valid=not unavailableDevices[id] }
-    end
-    for id, buffer in pairs(_G.energyBuffers) do
-        sources[#sources + 1] = { id=id, stored=buffer.energyStoredThisTick, capacity=buffer.capacity,
-            valid=not unavailableDevices[id] }
-    end
-    return sources
-end
-
-local function buildDispatchInput(storage)
-    local previousReactors, previousTurbines = {}, {}
-    for id, target in pairs(_G.overallStats.reactorTargets or {}) do
-        -- Dispatcher deadband consumes scalar reactor RF/steam targets.  Published targets are
-        -- richer tables so actuator callers can retain the unit alongside the number.
-        previousReactors[id] = type(target) == "table" and target.target or target
-    end
-    for id, target in pairs(_G.overallStats.turbineTargets or {}) do
-        previousTurbines[id] = type(target) == "table" and target.rfTarget or target
-    end
-    local input = { requiredRF=storage.requiredGeneration or 0, previousTargets={
-        reactors=previousReactors, turbines=previousTurbines,
-    }, passiveReactors={}, activeReactors={}, turbines={}, steamGroups=_G.overallStats.steamGroups or {} }
-    for id, reactor in pairs(_G.reactors) do
-        local descriptor = { id=id, groupId=reactor.groupId or "default", available=not unavailableDevices[id],
-            weight=dispatchWeight(id) }
-        if reactor.activelyCooled then
-            descriptor.capacity = configuredCapacity(id, "maxSteamPerTick", math.max(reactor.capacitySteam or 1,
-                reactor.averageSteamProductionRate or 0, reactor.steamProductionRate or 0))
-            input.activeReactors[#input.activeReactors + 1] = descriptor
-        else
-            descriptor.capacity = configuredCapacity(id, "maxRFPerTick", math.max(reactor.capacityRF or 1,
-                reactor.averageLastRFT or 0, reactor.lastRFT or 0))
-            input.passiveReactors[#input.passiveReactors + 1] = descriptor
-        end
-    end
-    for id, turbine in pairs(_G.turbines) do
-        local ratio = turbine.rfPerSteam
-        if type(ratio) ~= "number" or ratio <= 0 then ratio = 1 end
-        input.turbines[#input.turbines + 1] = {
-            id=id, groupId=turbine.groupId or "default", available=not unavailableDevices[id],
-            weight=dispatchWeight(id),
-            capacity=configuredCapacity(id, "maxRFPerTick", math.max(turbine.capacityRF or 1,
-                turbine.averageEnergyProduced or 0, turbine.energyProduced or 0, (turbine.flowMaxMax or 0) * ratio)),
-            maxFlow=dispatchFlowLimit(id, turbine.flowMaxMax), rfPerSteam=ratio,
-        }
-    end
-    -- Until active-reactor capacity learning has a settled observation, do not let a low
-    -- startup sample throttle a whole steam group below the turbines' requested flow.
-    local groupFlowCeilings = {}
-    for _, turbine in ipairs(input.turbines) do
-        local gid = turbine.groupId
-        groupFlowCeilings[gid] = (groupFlowCeilings[gid] or 0) + (turbine.maxFlow or 0)
-    end
-    for _, reactor in ipairs(input.activeReactors) do
-        if not _G.reactors[reactor.id].capacityKnown then
-            reactor.capacity = math.max(reactor.capacity or 1, groupFlowCeilings[reactor.groupId] or 1)
-        end
-    end
-    return input
-end
-
-local function publishDispatch(storage)
-    if not storageCoordinator or not Dispatcher then return nil end
-    local input = buildDispatchInput(storage)
-    local dispatch = Dispatcher.allocate(input, CONTROL_CONFIG)
-    -- Turbine RPM governor owns actual steam flow.  Cascade active-reactor targets to the
-    -- measured flow in each isolated group, so a transient turbine throttle cannot make an
-    -- active reactor manufacture steam merely because its RF allocation is larger.
-    local groupDemand, groupCapacity = {}, {}
-    for groupId, group in pairs(_G.overallStats.steamGroups or {}) do
-        groupDemand[groupId] = math.max(0, group.consumption or 0)
-    end
-    local groupBootstrap = {}
-    for _, turbine in ipairs(input.turbines) do
-        local target = dispatch.turbines[turbine.id]
-        groupBootstrap[turbine.groupId] = (groupBootstrap[turbine.groupId] or 0) + (target and target.flowTarget or 0)
-    end
-    for groupId, demand in pairs(groupDemand) do
-        if demand <= 0 then groupDemand[groupId] = groupBootstrap[groupId] or 0 end
-        if CONTROL_CONFIG.flywheelMode then
-            groupDemand[groupId] = math.max(groupDemand[groupId], groupBootstrap[groupId] or 0)
-        end
-        local group = (_G.overallStats.steamGroups or {})[groupId]
-        local pct = group and group.steamCapacity > 0 and group.storedSteam / group.steamCapacity * 100 or 0
-        local high = CONTROL_CONFIG.bufferMax or 70
-        if pct > high and high < 100 then
-            -- Storage-aware dispatch must also unwind an already-full steam tank.  This is
-            -- deliberately per-group: pressure in group A never throttles group B.
-            groupDemand[groupId] = groupDemand[groupId] * math.max(0, 1 - (pct - high) / (100 - high))
-        end
-    end
-    for _, reactor in ipairs(input.activeReactors) do
-        groupCapacity[reactor.groupId] = (groupCapacity[reactor.groupId] or 0) + (reactor.capacity or 0)
-    end
-    for _, reactor in ipairs(input.activeReactors) do
-        local capacity = groupCapacity[reactor.groupId] or 0
-        local demand = groupDemand[reactor.groupId] or 0
-        dispatch.reactors[reactor.id] = { unit="steam", target=(storage.requiredGeneration or 0) > 0
-            and capacity > 0 and demand * reactor.capacity / capacity or 0 }
-    end
-    local s = _G.overallStats
-    s.storage, s.dispatch = storage, dispatch
-    s.reactorTargets, s.turbineTargets = dispatch.reactors, dispatch.turbines
-    return dispatch
-end
-
 _G.selectedReactor = nil
 
 local function updateOverallStats()
     local s = _G.overallStats
-    s.topologyRevision = topologyRevision
 
     -- Aggregate energy buffer = every internal RF buffer on the net (passive reactors + turbines).
     s.storedLastTick = 0
@@ -268,44 +110,15 @@ local function updateOverallStats()
 
     s.totalRFT = s.lastRFT + s.turbineRFT
 
-    updateSteamGroups(s)
+    -- Grid drain: passive generation +/- the aggregate buffer delta (turbine RF shows up here
+    -- through the buffer delta, so passive reactors idle down when turbines already cover the load).
+    s.rfLost = math.floor(s.lastRFT + s.storedLastTick - s.storedThisTick + 0.5)
 
-    if storageCoordinator then
-        local availableRF = 0
-        for _, reactor in pairs(_G.reactors) do
-            if not reactor.activelyCooled then
-                availableRF = availableRF + configuredCapacity(reactor.id, "maxRFPerTick", math.max(reactor.capacityRF or 1,
-                    reactor.averageLastRFT or 0, reactor.lastRFT or 0))
-            end
-        end
-        for _, turbine in pairs(_G.turbines) do
-            local ratio = turbine.rfPerSteam
-            if type(ratio) ~= "number" or ratio <= 0 then ratio = 1 end
-            availableRF = availableRF + configuredCapacity(turbine.id, "maxRFPerTick",
-                math.max(turbine.capacityRF or 1, turbine.averageEnergyProduced or 0,
-                    turbine.energyProduced or 0, (turbine.flowMaxMax or 0) * ratio))
-        end
-        local storage = storageCoordinator:update({
-            sources=buildStorageSources(), actualGeneration=s.totalRFT,
-            availableGeneration=availableRF, topologyRevision=topologyRevision,
-        }, CONTROL_CONFIG)
-        -- Demand-following idled healthy devices. Command the whole plant at max
-        -- output; RPM and steam-tank safety still cap the hardware.
-        storage.requiredGeneration = availableRF
-        s.storedLastTick = storage.stored - storage.delta
-        s.storedThisTick = storage.stored
-        s.capacity = math.max(1, storage.capacity)
-        s.rfLost = math.floor(storage.externalDemand + 0.5)
-        publishDispatch(storage)
-        -- Merit-order preview is display-only; actuators always command max output.
-        computeDispatch(s)
-    else
-        -- Keep the pre-dispatch fallback usable for partial test harnesses and old installs.
-        s.rfLost = math.floor(s.lastRFT + s.storedLastTick - s.storedThisTick + 0.5)
-        computeDispatch(s)
-    end
     s.rfLostPerReactor = s.rfLost / math.max(1, s.passiveReactorCount)
     s.steamConsumedPerReactor = s.steamConsumedLastTick / math.max(1, s.activeReactorCount)
+
+    updateSteamGroups(s)
+    computeDispatch(s)
 end
 
 -- Resolve the configured steam groups into a membership lookup. Every reactor/turbine id not
@@ -316,7 +129,7 @@ local function resolveGroupMembership()
     local reactorGroup, turbineGroup = {}, {}
     local groups = CONTROL_CONFIG.steamGroups or {}
     for i, group in ipairs(groups) do
-        for _, rid in ipairs(group.reactors or group._reactors or {}) do reactorGroup[rid] = i end
+        for _, rid in ipairs(group.reactors or {}) do reactorGroup[rid] = i end
         for _, tid in ipairs(group.turbines or {}) do turbineGroup[tid] = i end
     end
     return reactorGroup, turbineGroup
@@ -565,8 +378,8 @@ local function connectExtremeReactor(reactorID)
     pcall(_G.reactors[reactorID].setActive, false)
     _G.reactors[reactorID].active = false
     _G.selectedReactor = _G.reactors[reactorID]
-    unavailableDevices[reactorID] = nil
-    topologyRevision = topologyRevision + 1
+    -- The reactor's internal battery is part of the grid buffer.
+    _G.energyBuffers[reactorID] = EnergyBuffer.newReactorEnergyBuffer(reactorID)
 end
 
 ---@param turbineID string
@@ -578,16 +391,14 @@ local function connectExtremeTurbine(turbineID)
     end
     print("Extreme Turbine " .. turbineID .. " connected!")
     _G.turbines[turbineID] = Turbine.newExtremeTurbine(turbineID)
-    unavailableDevices[turbineID] = nil
-    topologyRevision = topologyRevision + 1
+    -- The turbine's internal battery is also part of the grid buffer.
+    _G.energyBuffers[turbineID] = EnergyBuffer.newReactorEnergyBuffer(turbineID)
 end
 
 ---@param energyBufferID string
 local function connectForgeEnergyBuffer(energyBufferID)
     print("Energy Buffer " .. energyBufferID .. " connected!")
     _G.energyBuffers[energyBufferID] = EnergyBuffer.newForgeEnergyBuffer(energyBufferID)
-    unavailableDevices[energyBufferID] = nil
-    topologyRevision = topologyRevision + 1
 end
 
 local function firePeripheralAttachEventForAllPeripherals()
@@ -642,41 +453,11 @@ function _G.toggleAutoMode()
         and "AUTO_EFFICIENCY" or "AUTO_OUTPUT", "operator")
 end
 
-local function markUnavailable(id, err)
-    if unavailableDevices[id] then return end
-    unavailableDevices[id] = true
-    topologyRevision = topologyRevision + 1
-    if AlarmManager then
-        AlarmManager.raise("device_write_" .. id, "warning", "device write failed: " .. tostring(err), id)
-    end
-end
-
-local function protectedCall(id, callback)
-    local ok, result, err = xpcall(callback, function(message) return tostring(message) end)
-    if not ok then markUnavailable(id, result); return false end
-    if result == false then markUnavailable(id, err); return false end
-    return true
-end
-
-local function controlContext()
-    local storage = _G.overallStats.storage or {}
-    return {
-        steady=true, topologyChanged=storage.delta == 0 and storageCoordinator and storageCoordinator.topologyRevision == topologyRevision,
-        storageFull=(storage.fillPct or 0) >= 99.9,
-        transient=false, scram=SafetyManager and SafetyManager.state() == "SCRAM",
-    }
-end
-
-local function updateReactorRods(dispatch, context)
-    for _, id in ipairs(sortedIDs(_G.reactors)) do
-        local reactor = _G.reactors[id]
+local function updateReactorRods()
+    for _, reactor in pairs(_G.reactors) do
         -- A reactor mid-calibration owns its own rods (stepCalibration); skip normal steering.
-        if not reactor.calibration and not unavailableDevices[id] then
-            local target = dispatch and dispatch.reactors[id]
-            local healthy = protectedCall(id, function() return reactor:updateRods(target) end)
-            if healthy and reactor.observeCapacity and target then
-                reactor:observeCapacity(target.target, context, CONTROL_CONFIG)
-            end
+        if not reactor.calibration then
+            reactor:updateRods()
         end
     end
 end
@@ -726,75 +507,9 @@ function _G.isCalibrating()
 end
 
 ---@param steer boolean false = safety-governor-only pass (between steering intervals)
-local function controlTurbines(steer, dispatch, context, probeID)
-    for _, id in ipairs(sortedIDs(_G.turbines)) do
-        local turbine = _G.turbines[id]
-        if not unavailableDevices[id] then
-            local target = dispatch and dispatch.turbines[id]
-            -- Flywheel owns the throttle only for an explicitly idle turbine. Positive demand
-            -- remains a dispatch command even when flywheel mode is armed; otherwise a single
-            -- idle peer could make every turbine ignore its allocation.
-            local actuatorTarget = target
-            if CONTROL_CONFIG.flywheelMode and target and (target.rfTarget or 0) <= 0 then
-                actuatorTarget = nil
-            end
-            local deviceContext = {}
-            for key, value in pairs(context) do deviceContext[key] = value end
-            -- Only one rotating turbine can perform overspeed capacity learning in a tick.
-            deviceContext.probeAllowed = id == probeID
-            -- Do not let a cold rotor mistake its spin-up RPM for a sustainable operating bin.
-            -- Once the selected turbine has reached its normal configured band it may learn;
-            -- all other turbines remain observationally inert this tick.
-            local rpmMin = getEntitySetting(id, "rpmMin") or getEntitySetting(id, "idleRPM")
-                or CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM or 1800
-            if (turbine.bestSustainedRPM or 0) > 0 and turbine.bestSustainedRPM < rpmMin then
-                turbine.bestSustainedRPM = 0
-            end
-            deviceContext.steady = deviceContext.probeAllowed and turbine.averageRPM >= rpmMin - 25
-            local healthy = protectedCall(id, function()
-                return turbine:updateControl(CONTROL_CONFIG, false, nil, deviceContext)
-            end)
-            -- The RPM/safety governor runs every tick. Only a scheduled steering pass may
-            -- consume a dispatch target, so no later nil-target governor pass can overwrite it.
-            if healthy and steer then
-                healthy = protectedCall(id, function()
-                    return turbine:updateControl(CONTROL_CONFIG, true, actuatorTarget, deviceContext)
-                end)
-            end
-            if healthy and turbine.observeCapacity and actuatorTarget then
-                turbine:observeCapacity(target.rfTarget, deviceContext, CONTROL_CONFIG)
-            end
-        end
-    end
-end
-
-local function applyDispatch(steer)
-    local s = _G.overallStats
-    local dispatch, context = s.dispatch, controlContext()
-    local ids = sortedIDs(_G.turbines)
-    local probeID = nil
-    if #ids > 0 then
-        turbineProbeCursor = turbineProbeCursor % #ids + 1
-        probeID = ids[turbineProbeCursor]
-    end
-    local unavailableBefore = 0
-    for _ in pairs(unavailableDevices) do unavailableBefore = unavailableBefore + 1 end
-    if steer then updateReactorRods(dispatch, context) end
-    controlTurbines(steer, dispatch, context, probeID)
-
-    -- A failed target must not starve healthy peers for a full tick.  Reallocate once with
-    -- failed IDs excluded; do not retry the failed peripheral in this control pass.
-    local unavailableAfter = 0
-    for _ in pairs(unavailableDevices) do unavailableAfter = unavailableAfter + 1 end
-    if s.dispatch and unavailableAfter > unavailableBefore then
-        if storageCoordinator then
-            s.storage = storageCoordinator:update({ sources=buildStorageSources(), actualGeneration=s.totalRFT,
-                availableGeneration=s.dispatch.availableRF or 0, topologyRevision=topologyRevision }, CONTROL_CONFIG)
-        end
-        dispatch = publishDispatch(s.storage)
-        context = controlContext()
-        if steer then updateReactorRods(dispatch, context) end
-        controlTurbines(steer, dispatch, context, probeID)
+local function controlTurbines(steer)
+    for _, turbine in pairs(_G.turbines) do
+        turbine:updateControl(CONTROL_CONFIG, steer)
     end
 end
 
@@ -806,13 +521,10 @@ local function handlePeripheralDetach(peripheralID)
     end
     if _G.energyBuffers[peripheralID] ~= nil then
         _G.energyBuffers[peripheralID] = nil
-        topologyRevision = topologyRevision + 1
     end
     if _G.reactors[peripheralID] ~= nil then
         print("Reactor " .. peripheralID .. " disconnected!")
         _G.reactors[peripheralID] = nil
-        unavailableDevices[peripheralID] = nil
-        topologyRevision = topologyRevision + 1
         if _G.selectedReactor and _G.selectedReactor.id == peripheralID then
             _G.selectedReactor = next(_G.reactors) and _G.reactors[next(_G.reactors)] or nil
         end
@@ -820,8 +532,6 @@ local function handlePeripheralDetach(peripheralID)
     if _G.turbines[peripheralID] ~= nil then
         print("Turbine " .. peripheralID .. " disconnected!")
         _G.turbines[peripheralID] = nil
-        unavailableDevices[peripheralID] = nil
-        topologyRevision = topologyRevision + 1
         if SafetyManager and SafetyManager.isRunning() then
             SafetyManager.evaluate()
         end
@@ -886,7 +596,10 @@ local function runLoop(currentTickNumber)
         -- safety governor still runs every tick (inside updateControl, before steering).
         local interval = math.max(1, math.floor(CONTROL_CONFIG.controlIntervalTicks or 1))
         local steer = (currentTickNumber % interval == 0)
-        applyDispatch(steer)
+        if steer then
+            updateReactorRods()
+        end
+        controlTurbines(steer)
     end
 
     if HistoryManager then HistoryManager.sample() end
@@ -963,7 +676,6 @@ end
 _G.__test = {
     runLoop = runLoop,
     updateOverallStats = updateOverallStats,
-    applyDispatch = applyDispatch,
     handlePeripheralAttach = handlePeripheralAttach,
     handlePeripheralDetach = handlePeripheralDetach,
     syncConfigGlobals = syncConfigGlobals,
@@ -985,11 +697,6 @@ function _G.main()
     _G.energyBuffers = {}
     _G.btnOn = false
     _G.turbinesOn = false
-    unavailableDevices = {}
-    topologyRevision = 0
-    turbineProbeCursor = 0
-    storageCoordinator = StorageCoordinator and StorageCoordinator.new() or nil
-    _G.overallStats.topologyRevision = topologyRevision
 
     if RemoteDisplayServer then
         RemoteDisplayServer.start({

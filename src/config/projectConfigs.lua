@@ -100,15 +100,6 @@ _G.CONTROL_CONFIG = {
     rpmDeadband = 0,          -- ignore steam-PI RPM errors smaller than this (RPM)
     rodWriteThreshold = 0,    -- min rod-level change (%-points) before pushing new levels
 
-    storageTargetMin = 50,
-    storageTargetMax = 85,
-    storageReserveGain = 0.25,
-    dispatchRebalanceThreshold = 0.02,
-    capacityLearningRate = 0.05,
-    sustainedOverspeedEnabled = true,
-    sustainedOverspeedLimitRPM = 2400,
-    storageExclusions = {},
-
     -- Per-entity overrides of the global settings above, keyed by peripheral id, e.g.
     --   entityOverrides = { ["BigReactors-Turbine_2"] = { idleRPM = 900 } }
     -- Reactors honor: bufferMin, bufferMax.
