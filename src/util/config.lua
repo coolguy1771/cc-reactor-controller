@@ -5,7 +5,7 @@
 --   /state/<id>.state.conf        - free-form runtime state (writeState/readState)
 -- readConfig() layers defaults then overrides onto the live table; writeConfig() diffs the
 -- live table against defaults and stores just the difference (deleting the override file
--- when nothing differs). This keeps user tweaks intact across updates that change defaults.
+-- when nothing differs). An override file that exists but cannot be parsed is left on disk.
 
 local CONFIGS = {}
 CONFIGS["control"] = CONTROL_CONFIG
@@ -16,6 +16,10 @@ local STATE_PATH = "/state/"
 local CONFIG_EXTENSION = ".default.conf"
 local OVERRIDE_EXTENSION = ".override.conf"
 local STATE_EXTENSION = ".state.conf"
+
+-- Set when an on-disk override exists but cannot be parsed. writeConfig must not
+-- treat that as "no overrides" and delete or replace the user's file.
+local overrideUnreadable = {}
 
 local function isTableEmpty(value)
     if type(value) ~= "table" then
@@ -37,14 +41,23 @@ local function serializeTableAndWriteToFile(table, path)
     file.close()
 end
 
-local function readFileAndReturnDeserialized(path)
+-- Returns table, "ok" | nil, "missing" | nil, "invalid"
+local function readSerializedTable(path)
     local file = fs.open(path, "r")
     if file == nil then
-        return {}
+        return nil, "missing"
     end
-    local contents = file.readAll()
+    local contents = file.readAll() or ""
     file.close()
-    local data = textutils.unserialise(contents or "")
+    local data = textutils.unserialise(contents)
+    if type(data) ~= "table" then
+        return nil, "invalid"
+    end
+    return data, "ok"
+end
+
+local function readFileAndReturnDeserialized(path)
+    local data = readSerializedTable(path)
     if type(data) ~= "table" then
         return {}
     end
@@ -53,14 +66,6 @@ end
 
 local function readState(stateID)
     return readFileAndReturnDeserialized(STATE_PATH..stateID..STATE_EXTENSION)
-end
-
-local function readConfigDefaults(configID)
-    return readFileAndReturnDeserialized(DEFAULTS_PATH..configID..CONFIG_EXTENSION)
-end
-
-local function readConfigOverrides(configID)
-    return readFileAndReturnDeserialized(OVERRIDES_PATH..configID..OVERRIDE_EXTENSION)
 end
 
 local function spread(source, destination)
@@ -72,12 +77,34 @@ local function spread(source, destination)
     end
 end
 
+-- Accept the common edit typo `_reactors` so a loadable override still groups.
+local function normalizeSteamGroups(configData)
+    local groups = configData.steamGroups
+    if type(groups) ~= "table" then
+        return
+    end
+    for _, group in ipairs(groups) do
+        if type(group) == "table" and group.reactors == nil
+            and type(group._reactors) == "table" then
+            group.reactors = group._reactors
+        end
+    end
+end
+
 local function readConfig(configID)
     local configData = CONFIGS[configID]
-    local defaults = readConfigDefaults(configID)
-    local overrides = readConfigOverrides(configID)
+    local defaults = readFileAndReturnDeserialized(DEFAULTS_PATH..configID..CONFIG_EXTENSION)
     spread(defaults, configData)
-    spread(overrides, configData)
+
+    local overridePath = OVERRIDES_PATH..configID..OVERRIDE_EXTENSION
+    local overrides, status = readSerializedTable(overridePath)
+    if status == "invalid" then
+        overrideUnreadable[configID] = true
+        return
+    end
+    overrideUnreadable[configID] = nil
+    spread(overrides or {}, configData)
+    normalizeSteamGroups(configData)
 end
 
 -- Value equality that also works for table-valued config keys (compared by content,
@@ -90,8 +117,11 @@ local function valuesEqual(a, b)
 end
 
 local function writeConfig(configID)
+    if overrideUnreadable[configID] then
+        return
+    end
     local configData = CONFIGS[configID]
-    local defaults = readConfigDefaults(configID)
+    local defaults = readFileAndReturnDeserialized(DEFAULTS_PATH..configID..CONFIG_EXTENSION)
     local overrides = {}
     for key, value in pairs(configData) do
         if not valuesEqual(configData[key], defaults[key]) then
