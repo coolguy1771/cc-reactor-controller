@@ -51,3 +51,29 @@ t.setFluidFlowRateMax=oldSteam; t.setInductorEngaged=function() error("coil boom
 ok, err=t:writeCoils(false); assert(not ok and err and t.controlStatus=="WRITE_FAILED", "coil write failure not returned")
 t.setInductorEngaged=oldCoil
 print("turbine dispatch regressions ok")
+
+-- Chunk A: finite limit inputs must never produce an unbounded governor target.
+for _, lim in ipairs({nil, 0/0, math.huge, -math.huge}) do
+  t.rpm, t.averageRPM = 1800, 1800
+  local ok = pcall(function() t:updateControl(cfg, false, {rfTarget=1, flowTarget=1, rpmLimit=lim}, {}) end)
+  assert(ok, "non-finite sustained limit escaped safely")
+end
+cfg.entityOverrides.t = {sustainedOverspeedLimitRPM=2300}
+t:updateControl(cfg, false, {rfTarget=1,flowTarget=1,rpmLimit=2200},{})
+assert(t.dispatchTarget.rpmLimit == 2200, "valid target limit not accepted")
+cfg.entityOverrides.t.sustainedOverspeedLimitRPM=2100
+t:updateControl(cfg, false, {rfTarget=1,flowTarget=1,rpmLimit=2200},{})
+assert(t.controlStatus == "governor" or t.dispatchTarget.rpmLimit == 2200, "entity precedence path failed")
+cfg.entityOverrides = {}
+
+-- Constructor peripheral writes are protected and discovery-visible.
+for _, field in ipairs({"setFluidFlowRateMax", "setInductorEngaged"}) do
+  local broken = {}
+  for k,v in pairs(p) do broken[k]=v end
+  broken[field] = function() error(field .. " failure") end
+  peripheral.wrap = function() return broken end
+  local ok, made = pcall(Turbine.newExtremeTurbine, "broken")
+  assert(ok and made.controlStatus == "WRITE_FAILED" and made.controlError, "constructor write failure escaped")
+end
+peripheral.wrap = function() return p end
+print("turbine finite/failure chunk ok")
