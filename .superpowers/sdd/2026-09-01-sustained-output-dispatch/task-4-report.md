@@ -12,4 +12,8 @@ Fix Round 1 RED: regression assertions were added for threshold status and prote
 
 Fix Round 1 GREEN: `lua test/reactor_control.lua` and `lua test/device_sampling.lua` both exited 0; `git diff --check` exited 0 (only CRLF normalization warnings).
 
-Commit: 31b12841b47f3412889ddf4051909eb1d365a477
+Fix Round 2 RED: focused test failed at line 53 with `rod write threshold did not suppress small change`; diagnosis showed the setup produced an edge (0%) PID result, which correctly bypasses threshold suppression.
+
+Fix Round 2 GREEN: after setting a non-edge prior rod level and measured output yielding a sub-threshold delta, `.superpowers/tools/lua54/lua54.exe test/reactor_control.lua` printed `reactor control: ok` and exited 0; `test/device_sampling.lua` printed `device sampling ok` and exited 0; `git diff --check` exited 0.
+
+Fix commits: `b2c6b603fd11269aa7d1a57fff7d7cd4c54dbec0`, `4cff6523564c0da520f8f9c474ae026c2732248a`
