@@ -5,7 +5,7 @@
 --   /state/<id>.state.conf        - free-form runtime state (writeState/readState)
 -- readConfig() layers defaults then overrides onto the live table; writeConfig() diffs the
 -- live table against defaults and stores just the difference (deleting the override file
--- when nothing differs). An override file that exists but cannot be parsed is left on disk.
+-- when nothing differs). This keeps user tweaks intact across updates that change defaults.
 
 local CONFIGS = {}
 CONFIGS["control"] = CONTROL_CONFIG
@@ -17,15 +17,8 @@ local CONFIG_EXTENSION = ".default.conf"
 local OVERRIDE_EXTENSION = ".override.conf"
 local STATE_EXTENSION = ".state.conf"
 
--- Set when an on-disk override exists but cannot be parsed. writeConfig must not
--- treat that as "no overrides" and delete or replace the user's file.
-local overrideUnreadable = {}
-
-local function isTableEmpty(value)
-    if type(value) ~= "table" then
-        return true
-    end
-    for _, _ in pairs(value) do
+local function isTableEmpty(table)
+    for _, _ in pairs(table) do
         return false
     end
     return true
@@ -41,70 +34,40 @@ local function serializeTableAndWriteToFile(table, path)
     file.close()
 end
 
--- Returns table, "ok" | nil, "missing" | nil, "invalid"
-local function readSerializedTable(path)
+local function readFileAndReturnDeserialized(path)
     local file = fs.open(path, "r")
     if file == nil then
-        return nil, "missing"
-    end
-    local contents = file.readAll() or ""
-    file.close()
-    local data = textutils.unserialise(contents)
-    if type(data) ~= "table" then
-        return nil, "invalid"
-    end
-    return data, "ok"
-end
-
-local function readFileAndReturnDeserialized(path)
-    local data = readSerializedTable(path)
-    if type(data) ~= "table" then
         return {}
     end
-    return data
+    local contents = file.readAll()
+    file.close()
+    return textutils.unserialise(contents)
 end
 
 local function readState(stateID)
     return readFileAndReturnDeserialized(STATE_PATH..stateID..STATE_EXTENSION)
 end
 
+local function readConfigDefaults(configID)
+    return readFileAndReturnDeserialized(DEFAULTS_PATH..configID..CONFIG_EXTENSION)
+end
+
+local function readConfigOverrides(configID)
+    return readFileAndReturnDeserialized(OVERRIDES_PATH..configID..OVERRIDE_EXTENSION)
+end
+
 local function spread(source, destination)
-    if type(source) ~= "table" or type(destination) ~= "table" then
-        return
-    end
     for key, value in pairs(source) do
         destination[key] = value
     end
 end
 
--- Accept the common edit typo `_reactors` so a loadable override still groups.
-local function normalizeSteamGroups(configData)
-    local groups = configData.steamGroups
-    if type(groups) ~= "table" then
-        return
-    end
-    for _, group in ipairs(groups) do
-        if type(group) == "table" and group.reactors == nil
-            and type(group._reactors) == "table" then
-            group.reactors = group._reactors
-        end
-    end
-end
-
 local function readConfig(configID)
     local configData = CONFIGS[configID]
-    local defaults = readFileAndReturnDeserialized(DEFAULTS_PATH..configID..CONFIG_EXTENSION)
+    local defaults = readConfigDefaults(configID)
+    local overrides = readConfigOverrides(configID)
     spread(defaults, configData)
-
-    local overridePath = OVERRIDES_PATH..configID..OVERRIDE_EXTENSION
-    local overrides, status = readSerializedTable(overridePath)
-    if status == "invalid" then
-        overrideUnreadable[configID] = true
-        return
-    end
-    overrideUnreadable[configID] = nil
-    spread(overrides or {}, configData)
-    normalizeSteamGroups(configData)
+    spread(overrides, configData)
 end
 
 -- Value equality that also works for table-valued config keys (compared by content,
@@ -117,11 +80,8 @@ local function valuesEqual(a, b)
 end
 
 local function writeConfig(configID)
-    if overrideUnreadable[configID] then
-        return
-    end
     local configData = CONFIGS[configID]
-    local defaults = readFileAndReturnDeserialized(DEFAULTS_PATH..configID..CONFIG_EXTENSION)
+    local defaults = readConfigDefaults(configID)
     local overrides = {}
     for key, value in pairs(configData) do
         if not valuesEqual(configData[key], defaults[key]) then

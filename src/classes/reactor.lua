@@ -112,7 +112,7 @@ end
 ---@field averageSteamProductionRate number
 ---@field averageStoredSteam number
 ---@field averageFuelEfficiency number
----@field getEnergyStats function
+---@field getLastRFT function
 ---@field getRodLevel function
 ---@field getFuelUsage function
 ---@field getWaste function
@@ -179,10 +179,7 @@ local Reactor = {
 
         self.activelyCooled = self.isActivelyCooled()
         self.active = self.getActive()
-        local energy = self.getEnergyStats()
-        self.lastRFT = energy.energyProducedLastTick or 0
-        self.energyStored = energy.energyStored or 0
-        self.energyCapacity = energy.energyCapacity or 0
+        self.lastRFT = self.getLastRFT()
         self.rodLevel = self.getRodLevel()
         self.fuelUsage = self.getFuelUsage()
         self.waste = self.getWaste()
@@ -197,19 +194,6 @@ local Reactor = {
         self.lastUpdatedTick = currentTickNumber
     end,
 
-    observeCapacity = function(self, target, context, config)
-        local override = getEntitySetting(self.id, self.activelyCooled and "maxSteamPerTick" or "maxRFPerTick")
-        local disabled = getEntitySetting(self.id, "capacityLearning") == false
-        local actual = self.activelyCooled and self.steamProductionRate or self.lastRFT
-        local key = self.activelyCooled and "capacitySteam" or "capacityRF"
-        local previous = { value = self[key] or math.max(1, actual), known = self.capacityKnown == true, misses = self.capacityMisses or 0 }
-        local result = Dispatcher.learnCapacity(previous, {actual=actual, target=target, steady=context and context.steady ~= false, transient=context and context.transient}, {capacityLearningRate=(config and config.capacityLearningRate)})
-        if override then result.value, result.known = override, true end
-        if disabled then result.value, result.known = previous.value, previous.known end
-        self[key], self.capacityKnown, self.capacityMisses = math.max(1, result.value), result.known, result.misses
-        return result
-    end,
-
     -- The rod control law, run once per tick in auto mode.
     --
     -- Two error signals are blended:
@@ -222,19 +206,88 @@ local Reactor = {
     -- down to 0 as the buffer strays a quarter-band away (pure buffer correction, decisive).
     -- The blended error then feeds one PID step whose output is the rod level.
     ---@param self Reactor
-    updateRods = function (self, target)
+    updateRods = function (self)
         if not self.active then
-            return false, "reactor inactive"
+            return
         end
 
-        local expectedUnit = self.activelyCooled and "steam" or "rf"
-        if type(target) ~= "table" or target.unit ~= expectedUnit or type(target.target) ~= "number" then
-            self.controlStatus = "NO_TARGET"
-            return false, "missing or incompatible dispatch target"
+        -- Passive (RF) reactor: track the aggregate energy buffer & grid drain.
+        -- Actively cooled (steam) reactor: track the aggregate steam buffer & the turbines'
+        -- actual steam consumption -> production matches demand, no excess steam is created.
+        local currentGenerationRate = self.averageLastRFT
+        local currentStoredAmount = _G.overallStats.storedThisTick
+        local capacity = _G.overallStats.capacity
+        -- Per-reactor share of the demand, so N same-mode reactors don't each chase the full load.
+        local targetGenerationRate = _G.overallStats.rfLostPerReactor or _G.overallStats.rfLost
+
+        if self.activelyCooled then
+            currentGenerationRate = self.averageSteamProductionRate
+            -- Steam network group this reactor belongs to (feature 3). Falls back to the
+            -- shared aggregate when groups aren't configured / not yet resolved.
+            local group = _G.overallStats.steamGroups and self.groupId
+                and _G.overallStats.steamGroups[self.groupId]
+            if group then
+                currentStoredAmount = group.storedSteam
+                capacity = group.steamCapacity
+                targetGenerationRate = group.consumedPerReactor
+            else
+                currentStoredAmount = _G.overallStats.storedSteam
+                capacity = _G.overallStats.steamCapacity
+                targetGenerationRate = _G.overallStats.steamConsumedPerReactor or _G.overallStats.steamConsumedLastTick
+            end
         end
-        local currentGenerationRate = self.activelyCooled and self.averageSteamProductionRate or self.averageLastRFT
-        self.dispatchTarget = target.target
-        local rftRodLevel = target.target <= 0 and 100 or iteratePID(self.pid, target.target - currentGenerationRate)
+
+        -- Efficiency merit-order dispatch: when the controller has assigned this reactor a target
+        -- (efficiency mode, pool fully calibrated), chase that instead of the even per-reactor
+        -- share. The assignment already encodes "run the efficient reactors, idle the rest".
+        local dispatch = _G.overallStats.dispatchTargets
+        local hasDispatch = dispatch and dispatch[self.id] ~= nil
+        if hasDispatch then
+            targetGenerationRate = dispatch[self.id]
+        end
+
+        -- Nothing to regulate against yet (buffer not reported) -> hold rods, avoid divide-by-zero.
+        if not capacity or capacity <= 0 then
+            return
+        end
+
+        -- Per-reactor band overrides (entityOverrides), falling back to the global band.
+        local minb = getEntitySetting(self.id, "bufferMin") or _G.minb
+        local maxb = getEntitySetting(self.id, "bufferMax") or _G.maxb
+
+        local diffb = maxb - minb                -- band width, percent
+        local minRF = minb / 100 * capacity      -- band floor, absolute
+        local diffRF = diffb / 100 * capacity    -- band width, absolute
+        local diffr = diffb / 100                -- band width, fraction of capacity
+        -- Seek the middle of the target band; the weighting below blends toward pure
+        -- rate-matching (load-following) as the buffer nears this target.
+        local targetStoredAmount = diffRF / 2 + minRF
+
+        self.pid.setpointRFT = targetGenerationRate
+        self.pid.setpointRF = targetStoredAmount / capacity * 1000
+
+        local errorRFT = self.pid.setpointRFT - currentGenerationRate
+        local errorRF = self.pid.setpointRF - currentStoredAmount / capacity * 1000
+
+        -- Distance from band center, measured in quarter-bands: 0 -> W_RFT=1, >=1 -> W_RFT=0.
+        local bandQuarter = diffr / 4
+        local W_RFT = 0
+        if bandQuarter > 0 then
+            W_RFT = lerp(1, 0, (math.abs(targetStoredAmount - currentStoredAmount) / capacity / bandQuarter))
+        end
+        W_RFT = math.max(math.min(W_RFT, 1), 0)
+
+        local W_RF = (1 - W_RFT)
+
+        local combinedError = W_RFT * errorRFT + W_RF * errorRF
+        local rftRodLevel = iteratePID(self.pid, combinedError)
+
+        -- Optimize-efficiency fallback (uncalibrated pool, no dispatch target): never pull rods
+        -- OUT past the calibrated best-efficiency point, trading peak output for fuel efficiency.
+        -- When merit-order dispatch is active its target already encodes this, so skip the clamp.
+        if CONTROL_CONFIG.optimizeMode == "efficiency" and not hasDispatch and self.bestEffLevel then
+            rftRodLevel = math.max(rftRodLevel, self.bestEffLevel)
+        end
 
         if self.activelyCooled and CONTROL_CONFIG.steamCoordination ~= false then
             local group = _G.overallStats.steamGroups and self.groupId
@@ -251,17 +304,10 @@ local Reactor = {
         local forceEdge = (rftRodLevel <= 0 or rftRodLevel >= 100)
         if self.lastWrittenRodLevel ~= nil and not forceEdge
             and math.abs(rftRodLevel - self.lastWrittenRodLevel) < threshold then
-            self.controlStatus = "TRACKING"
-            return true
+            return
         end
-        local ok, err = pcall(self.setRodLevels, rftRodLevel)
-        if not ok then
-            self.controlStatus = "WRITE_FAILED"
-            return false, err
-        end
+        self.setRodLevels(rftRodLevel)
         self.lastWrittenRodLevel = rftRodLevel
-        self.controlStatus = "TRACKING"
-        return true
     end,
 
     -- Efficiency calibration (feature 6). A sweep drives the rods across 0..100% in 5% steps,
@@ -388,8 +434,6 @@ local function newExtremeReactor(id)
     }
     local reactorInstance = {
         id = id,
-        energyStored = 0, energyCapacity = 0, capacityRF = 1, capacitySteam = 1,
-        capacityKnown = false, dispatchTarget = nil,
         pid = pid,
         fuelUsageValues = Deque.new(),
         lastRFTValues = Deque.new(),
@@ -402,7 +446,7 @@ local function newExtremeReactor(id)
 
         -- Peripheral bindings (Modernized Object API).
         getFuelUsage = function () return extremeReactor.getFuelStats().fuelConsumedLastTick / 1000 end, -- mB -> B
-        getEnergyStats = extremeReactor.getEnergyStats,
+        getLastRFT = function () return extremeReactor.getEnergyStats().energyProducedLastTick end,
         getFuelTemp = extremeReactor.getFuelTemperature,
         getCaseTemp = extremeReactor.getCasingTemperature,
         getRodLevel = function () return calculateAverage(extremeReactor.getControlRodsLevels()) end,
@@ -424,15 +468,10 @@ local function newExtremeReactor(id)
             reactorInstance.curve = saved.curve
             reactorInstance.bestEffLevel = saved.bestEffLevel
             reactorInstance.bestEff = saved.bestEff
-            local peak = 1
-            for _, point in pairs(saved.curve) do peak = math.max(peak, point.out or 0) end
-            reactorInstance.capacityRF, reactorInstance.capacitySteam = peak, peak
-            reactorInstance.capacityKnown = true
         end
     end
 
     -- Prime all stats/averages immediately so consumers never see nil fields.
-    reactorInstance.lastUpdatedTick = -1
     local currentTickNumber = math.floor(os.clock() * 20)
     reactorInstance:update(currentTickNumber)
     return reactorInstance
