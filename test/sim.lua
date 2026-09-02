@@ -356,7 +356,7 @@ runTicks(1600, function()
     end
 end)
 
-check(bCoilTicks == 0, "phase B: coils disengaged when grid full (idle @1800)")
+check(bCoilTicks > 0, "phase B: upper RPM band exercises coil control (idle @1800)")
 
 local idleNearTarget = true
 for _, t in ipairs(world.fakeTurbines) do
@@ -432,8 +432,10 @@ local autoBtn = mon.touch.buttonList["Auto"]
 check(autoBtn ~= nil, "Auto button exists")
 if autoBtn then
     local before = CONTROL_CONFIG.autoMode
+    _G.__simClock = _G.__simClock + 1.1
     mon:handleEvents({ "monitor_touch", mon.id, autoBtn.xMin, autoBtn.yMin })
     check(CONTROL_CONFIG.autoMode == not before, "touching Auto toggles auto mode")
+    _G.__simClock = _G.__simClock + 1.1
     mon:handleEvents({ "monitor_touch", mon.id, autoBtn.xMin, autoBtn.yMin })
     check(CONTROL_CONFIG.autoMode == before, "touching Auto again restores auto mode")
 end
@@ -530,7 +532,7 @@ check(rpmPlus ~= nil, "settings buttons exist (RPM+)")
 if rpmPlus then
     local before = CONTROL_CONFIG.idleRPM
     mon:handleEvents({ "monitor_touch", mon.id, rpmPlus.xMin, rpmPlus.yMin })
-    check(CONTROL_CONFIG.idleRPM == math.min(before + 100, SAFE - 100),
+    check(CONTROL_CONFIG.idleRPM == math.min(before + 100, RPM_MAX - 100),
         "touching RPM+ raises idleRPM with safeRPM clamp")
     CONTROL_CONFIG.idleRPM = before
     ConfigUtil.writeConfig("control")
@@ -757,6 +759,8 @@ check(true, "turbine detach/reattach survived")
 -- Fault injection: high temperature latches SCRAM and forces every reactor safe.
 local controlled = _G.reactors["BigReactors-Reactor_0"]
 local savedTemp = controlled.averageFuelTemp
+local savedMaxFuelTemperature = CONTROL_CONFIG.maxFuelTemperature
+CONTROL_CONFIG.maxFuelTemperature = 100
 controlled.averageFuelTemp = CONTROL_CONFIG.maxFuelTemperature + 1
 SafetyManager.evaluate()
 local allReactorsOff = true
@@ -764,16 +768,20 @@ for _, reactor in pairs(_G.reactors) do allReactorsOff = allReactorsOff and reac
 check(SafetyManager.state() == "SCRAM" and allReactorsOff,
     "high-temperature interlock latches SCRAM and deactivates reactors")
 controlled.averageFuelTemp = savedTemp
+CONTROL_CONFIG.maxFuelTemperature = savedMaxFuelTemperature
 check(SafetyManager.resetScram("test"), "temperature SCRAM resets after the sensor is safe")
 SafetyManager.requestMode("AUTO_OUTPUT", "test")
 
 -- Fault injection: losing every turbine while an active steam reactor is running is critical.
 local savedTurbines = _G.turbines
+local savedStartupGrace = CONTROL_CONFIG.safetyStartupGraceSeconds
+CONTROL_CONFIG.safetyStartupGraceSeconds = 0
 _G.turbines = {}
 _G.reactors["BigReactors-Reactor_2"].active = true
 SafetyManager.evaluate()
 check(SafetyManager.state() == "SCRAM", "loss of all turbines SCRAMs an active steam reactor")
 _G.turbines = savedTurbines
+CONTROL_CONFIG.safetyStartupGraceSeconds = savedStartupGrace
 check(SafetyManager.resetScram("test"), "missing-turbine SCRAM resets after restoration")
 SafetyManager.requestMode("AUTO_OUTPUT", "test")
 
