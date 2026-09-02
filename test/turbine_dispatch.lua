@@ -27,7 +27,7 @@ assert(fake.coils and fake.flowCap == 0,"absolute sustained RPM limit did not go
 print("turbine dispatch ok")
 
 -- Regression coverage: transient samples are excluded, steady samples populate bins.
-t.rpmBinObservations = nil; t.energyProduced = 123; t.averageRPM = 1800; t.coilsEngaged = true
+t.rpmBinObservations = nil; t.energyProduced = 123; t.rpm = 1800; t.averageRPM = 1800; t.coilsEngaged = true
 t:updateControl(cfg, true, {rfTarget=5000,flowTarget=2000,rpmLimit=2400}, {steady=true, transient=true})
 assert(not t.rpmBinObservations, "transient braking sample updated observation bin")
 t:updateControl(cfg, true, {rfTarget=5000,flowTarget=2000,rpmLimit=2400}, {steady=true})
