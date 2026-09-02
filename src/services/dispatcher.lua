@@ -23,16 +23,16 @@ function Dispatcher.allocate(input, config)
   local required = math.max(0, input.requiredRF or 0)
   local utilization = total > 0 and math.min(1, required / total) or 0
   local previous = input.previousTargets or {}
-  local threshold = config.dispatchRebalanceThreshold
+  local threshold = config.dispatchRebalanceThreshold or 0.02
   for _, s in ipairs(sources) do
     local d, raw = s.d, s.c * utilization
     if d.maxFlow then
       local rf = raw
-      local flow = d.rfPerSteam and math.min(d.maxFlow, rf / d.rfPerSteam) or 0
       local old = previous.turbines and previous.turbines[d.id]
       local oldrf = type(old)=="table" and old.rfTarget or old
       rf = deadband(rf, oldrf, d.capacity or 0, threshold)
-      turbines[d.id] = {rfTarget=rf, flowTarget=flow, rpmLimit=config.sustainedOverspeedLimitRPM or 0}
+      local flow = d.rfPerSteam and math.min(d.maxFlow, rf / d.rfPerSteam) or 0
+      turbines[d.id] = {rfTarget=rf, flowTarget=flow, rpmLimit=config.sustainedOverspeedLimitRPM or 2400}
     else
       local old = previous.reactors and previous.reactors[d.id]
       reactors[d.id] = {unit="rf", target=deadband(raw, old, d.capacity or 0, threshold)}
