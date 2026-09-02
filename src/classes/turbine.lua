@@ -258,7 +258,7 @@ local Turbine = {
         local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
         if context.probeAllowed and storageBelowTarget and saturated and config.sustainedOverspeedEnabled ~= false and
             context.steady and not context.transient and not context.governorBraking and not context.storageFull then
-            self.probeBin = self.probeBin or rpmMin
+            self.probeBin = self.probeBin or math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
             self.probeSettledBins = self.probeSettledBins or {}
             self.probeSettledFailures = self.probeSettledFailures or 0
             if self.probeBin >= absoluteLimit then self.controlStatus = "probe-limit" end
