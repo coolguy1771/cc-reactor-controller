@@ -31,7 +31,7 @@ local turbine = {
     getBladeEfficiency = function() return 1 end, setFluidFlowRateMax = function() end,
     setInductorEngaged = function() end, setActive = function() end,
 }
-peripheral = { wrap = function(id) return id == "r" and reactor or turbine end }
+peripheral = { wrap = function(id) return (id == "r" or id == "cal") and reactor or turbine end }
 local r = Reactor.newExtremeReactor("r")
 local t = Turbine.newExtremeTurbine("t")
 assert(r.energyStored == 20 and r.energyCapacity == 100 and r.lastUpdatedTick >= 0,
@@ -42,6 +42,12 @@ local constructorReactorCalls = calls.reactorEnergyStats
 assert(constructorReactorCalls == 1, "reactor constructor must sample once")
 assert(calls.turbineEnergyProduced == 1 and calls.turbineEnergyStored == 1 and calls.turbineEnergyCapacity == 1,
     "turbine constructor must sample each getter once")
+ConfigUtil = { readState = function(id)
+    if id == "cal" then return {curve = {[0] = {out=77, rft=77, steam=0}, [5] = {out=55, rft=55, steam=0}}} end
+end }
+local calibrated = Reactor.newExtremeReactor("cal")
+assert(calibrated.capacityRF == 77 and calibrated.capacityKnown == true,
+    "calibrated curve peak must restore known passive capacity")
 calls.reactorEnergyStats, calls.turbineEnergyProduced, calls.turbineEnergyStored, calls.turbineEnergyCapacity = 0, 0, 0, 0
 r:update(1); t:update(1)
 assert(calls.reactorEnergyStats == 1, "reactor getEnergyStats must provide output, stored RF, and capacity in one call")
