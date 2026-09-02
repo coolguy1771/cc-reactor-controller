@@ -249,7 +249,9 @@ local Turbine = {
         self.desiredCoils = true
         local ok, err = self:writeCoils(true); if not ok then return false, err end
         local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
-        if context.probeAllowed and not self.probeStopped and not self.probeBin and config.sustainedOverspeedEnabled ~= false then
+        local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
+        local probeEligible = context.probeAllowed and not self.probeStopped and storageBelowTarget and desiredFlow >= self.flowMaxMax and config.sustainedOverspeedEnabled ~= false and context.steady and not context.transient and not context.governorBraking and not context.flywheelDeceleration and not context.storageFull
+        if probeEligible and not self.probeBin then
             self.probeBin = math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
         end
         local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
@@ -258,9 +260,7 @@ local Turbine = {
         ok, err = self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, self.flowMaxMax)); if not ok then return false, err end
         self.controlStatus = "dispatch"
         local saturated = desiredFlow >= self.flowMaxMax
-        local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
-        if context.probeAllowed and not self.probeStopped and storageBelowTarget and saturated and config.sustainedOverspeedEnabled ~= false and
-            context.steady and not context.transient and not context.governorBraking and not context.storageFull then
+        if probeEligible then
             self.probeBin = self.probeBin or math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
             self.probeSettledBins = self.probeSettledBins or {}
             self.probeSettledFailures = self.probeSettledFailures or 0
