@@ -848,6 +848,98 @@ for _, role in ipairs({ "overview", "reactors", "turbines", "alarms", "history" 
 end
 mon.role = "overview"
 
+-- Task 8 operator-visibility contract: scan the real terminal stub rather than asserting
+-- implementation details.  Aggregate dispatch/storage labels must remain visible in every
+-- device-facing role, and a degraded device must be called out in its card.
+local function renderedText(target)
+    local lines = {}
+    for y = 1, target._h do
+        local chars = {}
+        for x = 1, target._w do
+            local cell = target._grid[y] and target._grid[y][x]
+            chars[x] = cell and cell.ch or " "
+        end
+        lines[#lines + 1] = table.concat(chars)
+    end
+    return table.concat(lines, "\n")
+end
+for _, role in ipairs({ "overview", "reactors", "turbines" }) do
+    mon.role = role
+    mon:draw()
+    local text = renderedText(mon.mon)
+    for _, label in ipairs({ "Demand", "Requested", "Available", "Stored", "Charge", "Target", "Actual" }) do
+        check(text:find(label, 1, true) ~= nil,
+            "monitor " .. role .. " shows dispatch label " .. label)
+    end
+end
+local savedStatus = _G.reactors["BigReactors-Reactor_0"].controlStatus
+_G.reactors["BigReactors-Reactor_0"].controlStatus = "DEGRADED"
+mon.role = "reactors"
+mon:draw()
+check(renderedText(mon.mon):find("DEGRADED", 1, true) ~= nil,
+    "degraded device card is visible")
+_G.reactors["BigReactors-Reactor_0"].controlStatus = savedStatus
+local smallMonitor = Monitor.new("small-task8", makeTerm(20, 10))
+smallMonitor.role = "overview"
+check(pcall(function() smallMonitor:draw() end), "small monitor renders without bounds errors")
+
+-- Sentinel telemetry regression: values must come from the storage/dispatch snapshots and
+-- device samples, not merely from static labels or stale aggregate fields.
+local savedStorage, savedDispatch = _G.overallStats.storage, _G.overallStats.dispatch
+local savedOverrides = CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_2"]
+local savedKnown = {}
+local savedDeviceTelemetry = {}
+for _, id in ipairs({ "BigReactors-Reactor_0", "BigReactors-Reactor_1", "BigReactors-Reactor_2" }) do
+    savedKnown[id] = _G.reactors[id].capacityKnown
+    savedDeviceTelemetry[id] = { capacityRF = _G.reactors[id].capacityRF, averageLastRFT = _G.reactors[id].averageLastRFT,
+        averageFuelUsage = _G.reactors[id].averageFuelUsage, waste = _G.reactors[id].waste }
+end
+_G.overallStats.storage = { externalDemand=1234, requiredGeneration=2345, stored=3456,
+    capacity=4567, fillPct=75, delta=-678, sourceIDs={ "sentinel-battery" } }
+_G.overallStats.dispatch = { requiredRF=2345, availableRF=5678,
+    reactors={
+        ["BigReactors-Reactor_0"]={ target=1111 },
+        ["BigReactors-Reactor_1"]={ target=2222 },
+        ["BigReactors-Reactor_2"]={ target=3333 },
+    }, turbines={} }
+_G.reactors["BigReactors-Reactor_0"].capacityKnown = true
+_G.reactors["BigReactors-Reactor_0"].capacityRF = 10000
+_G.reactors["BigReactors-Reactor_0"].averageLastRFT = 4000
+_G.reactors["BigReactors-Reactor_0"].averageFuelUsage = 7.321
+_G.reactors["BigReactors-Reactor_0"].waste = 987
+_G.reactors["BigReactors-Reactor_1"].capacityKnown = false
+_G.reactors["BigReactors-Reactor_2"].capacityKnown = false
+CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_2"] = { maxSteamPerTick = 4444 }
+mon.role = "reactors"
+mon:draw()
+local sentinelText = renderedText(mon.mon)
+for _, value in ipairs({ "1.23K", "2.35K", "5.68K", "3.46K", "4.57K", "75.0%", "-678" }) do
+    check(sentinelText:find(value, 1, true) ~= nil, "monitor renders sentinel value " .. value)
+end
+check(sentinelText:find("Target", 1, true) ~= nil and sentinelText:find("1.11K", 1, true) ~= nil
+        and sentinelText:find("Actual", 1, true) ~= nil and sentinelText:find("4.00K", 1, true) ~= nil,
+    "monitor renders device target and actual values")
+check(sentinelText:find("Util", 1, true) ~= nil and sentinelText:find("learned", 1, true) ~= nil
+        and sentinelText:find("observing", 1, true) ~= nil and sentinelText:find("configured", 1, true) ~= nil,
+    "monitor renders utilization and all capacity source variants")
+check(sentinelText:find("40.0%", 1, true) ~= nil, "monitor renders numeric device utilization")
+check(sentinelText:find("7.321", 1, true) ~= nil and sentinelText:find("987", 1, true) ~= nil,
+    "monitor renders fuel and waste simultaneously")
+mon.detailEntity = { kind = "reactor", obj = _G.reactors["BigReactors-Reactor_0"] }
+mon:draw()
+check(renderedText(mon.mon):find("sentinel-battery", 1, true) ~= nil,
+    "monitor detail includes contributing storage ID")
+mon.detailEntity = nil
+_G.overallStats.storage, _G.overallStats.dispatch = savedStorage, savedDispatch
+CONTROL_CONFIG.entityOverrides["BigReactors-Reactor_2"] = savedOverrides
+for id, known in pairs(savedKnown) do
+    _G.reactors[id].capacityKnown = known
+    _G.reactors[id].capacityRF = savedDeviceTelemetry[id].capacityRF
+    _G.reactors[id].averageLastRFT = savedDeviceTelemetry[id].averageLastRFT
+    _G.reactors[id].averageFuelUsage = savedDeviceTelemetry[id].averageFuelUsage
+    _G.reactors[id].waste = savedDeviceTelemetry[id].waste
+end
+
 --endregion
 --region sustained-output dispatch integration phases
 
