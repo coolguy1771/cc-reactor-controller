@@ -28,3 +28,18 @@ GREEN command/output:
     reactor control: ok
 
 The portable simulator was rerun after the fixes. `test/sim.lua` reports exactly 16 failures, all legacy controller integration assertions requiring Task 6 to pass dispatch targets/context; safety governor and ceiling checks remain passing. `git diff --check` passes. Fix commits: `20109b8`, `ca9b59c`.
+
+## Fix Round 2 verification
+
+Commands and exact focused outputs:
+
+    .superpowers/tools/lua54/lua54.exe test/turbine_dispatch.lua
+    turbine dispatch ok
+    .superpowers/tools/lua54/lua54.exe test/device_sampling.lua
+    device sampling ok
+    .superpowers/tools/lua54/lua54.exe test/reactor_control.lua
+    threshold true TRACKING 11 11
+    reactor control: ok
+    git diff --check
+
+The portable simulator still reports 16 failures, classified as Task 6 controller integration (missing target/context wiring); no new Task 5-specific simulator failure was introduced. Review of `test/turbine_dispatch.lua` confirms the current file covers positive/zero target and absolute-limit behavior, but does not yet contain every requested Round 2 regression case (transient/steady bin filtering, probe progression/settling, finite precedence matrix, and explicit write-failure/constructor assertions). Commits for the Round 2 source fixes are `92f0358` and `bba5037`.
