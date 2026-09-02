@@ -31,6 +31,7 @@ local function rpmLimits(config, turbineId)
     if rpmMax < rpmMin then rpmMax = rpmMin end
     return rpmMin, rpmMax
 end
+local DEFAULT_SUSTAINED_LIMIT = 2400
 
 local function finiteLimit(value, fallback)
     value = tonumber(value)
@@ -76,6 +77,7 @@ local Turbine = {
             return 100
         end
         return self.energyStored / self.energyCapacity * 100
+        return true
     end,
 
     ---@param self Turbine
@@ -94,6 +96,7 @@ local Turbine = {
         self.averageRPM = self.rpmValues:average()
         self.averageEnergyProduced = self.energyProducedValues:average()
         self.averageSteamFlow = self.steamFlowValues:average()
+        return true
     end,
 
     ---@param self Turbine
@@ -138,7 +141,8 @@ local Turbine = {
         amount = math.floor(clamp(amount, 0, self.flowMaxMax) + 0.5)
         local forceEdge = (amount == 0 or amount == self.flowMaxMax)
         if forceEdge or math.abs(amount - self.lastWrittenSteamCap) >= self.steamWriteThreshold then
-            self.setFluidFlowRateMax(amount)
+            local ok, err = pcall(self.setFluidFlowRateMax, amount)
+            if not ok then self.controlStatus = "WRITE_FAILED"; return false, err end
             self.lastWrittenSteamCap = amount
             self.steamCap = amount
         end
@@ -148,7 +152,8 @@ local Turbine = {
     ---@param engaged boolean
     writeCoils = function(self, engaged)
         if engaged ~= self.lastWrittenCoils then
-            self.setInductorEngaged(engaged)
+            local ok, err = pcall(self.setInductorEngaged, engaged)
+            if not ok then self.controlStatus = "WRITE_FAILED"; return false, err end
             self.lastWrittenCoils = engaged
             self.coilsEngaged = engaged
         end
@@ -189,7 +194,7 @@ local Turbine = {
         local rpmMin, rpmMax = rpmLimits(config, self.id)
         local override = config.entityOverrides and config.entityOverrides[self.id]
         local absoluteLimit = finiteLimit(override and override.sustainedOverspeedLimitRPM,
-            finiteLimit(target.rpmLimit, finiteLimit(config.sustainedOverspeedLimitRPM, rpmMax)))
+            finiteLimit(target.rpmLimit, finiteLimit(config.sustainedOverspeedLimitRPM, DEFAULT_SUSTAINED_LIMIT)))
         if absoluteLimit < rpmMin then absoluteLimit = rpmMin end
         local ceiling = config.rpmMax or config.ceilingRPM or rpmMax
         local safe = config.safeRPM or math.max(rpmMin, ceiling - 10)
@@ -243,7 +248,7 @@ local Turbine = {
         self.desiredCoils = true
         self:writeCoils(true)
         local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
-        local targetRPM = math.min(self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin, absoluteLimit - 10)
+        local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
         local dispatchErr = rpmBandError(avgRpm, targetRPM, targetRPM)
         self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, self.flowMaxMax)
         self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, self.flowMaxMax))
@@ -252,7 +257,8 @@ local Turbine = {
         local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
         if context.probeAllowed and storageBelowTarget and saturated and config.sustainedOverspeedEnabled ~= false and
             context.steady and not context.transient and not context.governorBraking and not context.storageFull then
-            self.probeBin = math.min((self.probeBin or rpmMin) + 100, absoluteLimit)
+            self.probeBin = self.probeBin or rpmMin
+            self.probeSettledBins = self.probeSettledBins or {}
             self.probeSettledFailures = self.probeSettledFailures or 0
             if self.probeBin >= absoluteLimit then self.controlStatus = "probe-limit" end
         end
@@ -267,9 +273,10 @@ local Turbine = {
             if (self.bestSustainedRPM or 0) == 0 or b.rf > (self.bestContinuousRF or 0) then
                 self.bestContinuousRF, self.bestSustainedRPM = b.rf, bin
                 self.probeSettledFailures = 0
-            elseif (self.probeBin or 0) > 0 then
+            elseif (self.probeBin or 0) > 0 and not self.probeSettledBins[bin] then
+                self.probeSettledBins[bin] = true
                 self.probeSettledFailures = (self.probeSettledFailures or 0) + 1
-                if self.probeSettledFailures >= 2 then self.probeBin = absoluteLimit end
+                if self.probeSettledFailures >= 2 then self.probeBin = absoluteLimit else self.probeBin = math.min(self.probeBin + 100, absoluteLimit) end
             end
         end
         return
