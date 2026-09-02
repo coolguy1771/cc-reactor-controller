@@ -34,10 +34,22 @@ local turbine = {
 peripheral = { wrap = function(id) return id == "r" and reactor or turbine end }
 local r = Reactor.newExtremeReactor("r")
 local t = Turbine.newExtremeTurbine("t")
+assert(r.energyStored == 20 and r.energyCapacity == 100 and r.lastUpdatedTick >= 0,
+    "reactor constructor must populate tick-zero sample")
+assert(t.energyStored == 2 and t.energyCapacity == 3 and t.lastUpdatedTick >= 0,
+    "turbine constructor must populate tick-zero sample")
+local constructorReactorCalls = calls.reactorEnergyStats
+assert(constructorReactorCalls == 1, "reactor constructor must sample once")
+assert(calls.turbineEnergyProduced == 1 and calls.turbineEnergyStored == 1 and calls.turbineEnergyCapacity == 1,
+    "turbine constructor must sample each getter once")
 calls.reactorEnergyStats, calls.turbineEnergyProduced, calls.turbineEnergyStored, calls.turbineEnergyCapacity = 0, 0, 0, 0
 r:update(1); t:update(1)
 assert(calls.reactorEnergyStats == 1, "reactor getEnergyStats must provide output, stored RF, and capacity in one call")
 assert(calls.turbineEnergyProduced == 1 and calls.turbineEnergyStored == 1 and calls.turbineEnergyCapacity == 1, "turbine getters were repeated in one tick")
+calls.reactorEnergyStats, calls.turbineEnergyProduced, calls.turbineEnergyStored, calls.turbineEnergyCapacity = 0, 0, 0, 0
+r:update(2); t:update(2)
+assert(calls.reactorEnergyStats == 1 and calls.turbineEnergyProduced == 1 and calls.turbineEnergyStored == 1 and calls.turbineEnergyCapacity == 1,
+    "each device getter must be called once on every tick")
 assert(r.lastUpdatedTick == 0 or r.energyStored == 20, "constructor must sample tick zero")
 assert(r.energyStored == 20 and r.energyCapacity == 100, "reactor energy sample fields missing")
 assert(r.observeCapacity and t.observeCapacity, "capacity observation interface missing")
@@ -46,8 +58,17 @@ local before = t.rfPerSteam
 t.coilsEngaged = false; t.steamFlow = 10; t.energyProduced = 100
 t:observeCapacity(100, {steady = true, topologyChanged = false}, {})
 assert(t.rfPerSteam == before, "rfPerSteam learned while coils disengaged")
-local c = {steady=true, topologyChanged=true, calibration=false, scram=false, governorBraking=false, startupGrace=false, storageFull=false, flywheelDeceleration=false}
-t.coilsEngaged=true; t.steamFlow=10; t.energyProduced=100; t.rfPerSteam=1
-t:observeCapacity(100, c, {})
-assert(t.rfPerSteam == 1, "rfPerSteam learned during topology change")
+local blocked = {"flywheelDeceleration", "scram", "governorBraking", "startupGrace", "topologyChanged", "calibration", "storageFull"}
+for _, name in ipairs(blocked) do
+    t.coilsEngaged=true; t.steamFlow=10; t.energyProduced=100; t.rfPerSteam=1; t.capacityRF=1; t.capacityKnown=false
+    local context = {steady=true}; context[name] = true
+    t:observeCapacity(100, context, {})
+    assert(t.rfPerSteam == 1 and t.capacityRF == 1 and not t.capacityKnown, "learning occurred during " .. name)
+end
+t.capacityRF=100; t.capacityKnown=true; t.capacityMisses=2; t.coilsEngaged=true; t.steamFlow=10; t.energyProduced=1
+t:observeCapacity(200, {steady=true}, {})
+assert(t.capacityRF == 1 and t.capacityMisses == 0, "turbine persisted misses did not lower stale capacity")
+r.capacityRF=100; r.capacityKnown=true; r.capacityMisses=2; r.lastRFT=1; r.activelyCooled=false
+r:observeCapacity(200, {steady=true}, {})
+assert(r.capacityRF == 1 and r.capacityMisses == 0, "reactor persisted misses did not lower stale capacity")
 print("device sampling ok")
