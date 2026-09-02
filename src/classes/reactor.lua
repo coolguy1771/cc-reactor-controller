@@ -236,81 +236,10 @@ local Reactor = {
         self.dispatchTarget = target.target
         local rftRodLevel = target.target <= 0 and 100 or iteratePID(self.pid, target.target - currentGenerationRate)
 
-        -- Explicit dispatch targets are already allocated per device; no aggregate blending.
-        local hasDispatch = false
-        if false then
-        local currentGenerationRate = self.averageLastRFT
-        local currentStoredAmount = _G.overallStats.storedThisTick
-        local capacity = _G.overallStats.capacity
-        -- Per-reactor share of the demand, so N same-mode reactors don't each chase the full load.
-        local targetGenerationRate = _G.overallStats.rfLostPerReactor or _G.overallStats.rfLost
-
-        if self.activelyCooled then
-            currentGenerationRate = self.averageSteamProductionRate
-            -- Steam network group this reactor belongs to (feature 3). Falls back to the
-            -- shared aggregate when groups aren't configured / not yet resolved.
-            local group = _G.overallStats.steamGroups and self.groupId
-                and _G.overallStats.steamGroups[self.groupId]
-            if group then
-                currentStoredAmount = group.storedSteam
-                capacity = group.steamCapacity
-                targetGenerationRate = group.consumedPerReactor
-            else
-                currentStoredAmount = _G.overallStats.storedSteam
-                capacity = _G.overallStats.steamCapacity
-                targetGenerationRate = _G.overallStats.steamConsumedPerReactor or _G.overallStats.steamConsumedLastTick
-            end
-            end
-        -- Efficiency merit-order dispatch: when the controller has assigned this reactor a target
-        -- (efficiency mode, pool fully calibrated), chase that instead of the even per-reactor
-        -- share. The assignment already encodes "run the efficient reactors, idle the rest".
-        local dispatch = _G.overallStats.dispatchTargets
-        local hasDispatch = dispatch and dispatch[self.id] ~= nil
-        if hasDispatch then
-            targetGenerationRate = dispatch[self.id]
-        end
-
-        -- Nothing to regulate against yet (buffer not reported) -> hold rods, avoid divide-by-zero.
-        if not capacity or capacity <= 0 then
-            return
-        end
-
-        -- Per-reactor band overrides (entityOverrides), falling back to the global band.
-        local minb = getEntitySetting(self.id, "bufferMin") or _G.minb
-        local maxb = getEntitySetting(self.id, "bufferMax") or _G.maxb
-
-        local diffb = maxb - minb                -- band width, percent
-        local minRF = minb / 100 * capacity      -- band floor, absolute
-        local diffRF = diffb / 100 * capacity    -- band width, absolute
-        local diffr = diffb / 100                -- band width, fraction of capacity
-        -- Seek the middle of the target band; the weighting below blends toward pure
-        -- rate-matching (load-following) as the buffer nears this target.
-        local targetStoredAmount = diffRF / 2 + minRF
-
-        self.pid.setpointRFT = targetGenerationRate
-        self.pid.setpointRF = targetStoredAmount / capacity * 1000
-
-        local errorRFT = self.pid.setpointRFT - currentGenerationRate
-        local errorRF = self.pid.setpointRF - currentStoredAmount / capacity * 1000
-
-        -- Distance from band center, measured in quarter-bands: 0 -> W_RFT=1, >=1 -> W_RFT=0.
-        local bandQuarter = diffr / 4
-        local W_RFT = 0
-        if bandQuarter > 0 then
-            W_RFT = lerp(1, 0, (math.abs(targetStoredAmount - currentStoredAmount) / capacity / bandQuarter))
-        end
-        W_RFT = math.max(math.min(W_RFT, 1), 0)
-
-        local W_RF = (1 - W_RFT)
-
-        local combinedError = W_RFT * errorRFT + W_RF * errorRF
-        rftRodLevel = iteratePID(self.pid, combinedError)
-        end
-
         -- Optimize-efficiency fallback (uncalibrated pool, no dispatch target): never pull rods
         -- OUT past the calibrated best-efficiency point, trading peak output for fuel efficiency.
         -- When merit-order dispatch is active its target already encodes this, so skip the clamp.
-        if CONTROL_CONFIG.optimizeMode == "efficiency" and not hasDispatch and self.bestEffLevel then
+        if CONTROL_CONFIG.optimizeMode == "efficiency" and self.bestEffLevel then
             rftRodLevel = math.max(rftRodLevel, self.bestEffLevel)
         end
 
@@ -329,7 +258,8 @@ local Reactor = {
         local forceEdge = (rftRodLevel <= 0 or rftRodLevel >= 100)
         if self.lastWrittenRodLevel ~= nil and not forceEdge
             and math.abs(rftRodLevel - self.lastWrittenRodLevel) < threshold then
-            return
+            self.controlStatus = "TRACKING"
+            return true
         end
         local ok, err = pcall(self.setRodLevels, rftRodLevel)
         if not ok then

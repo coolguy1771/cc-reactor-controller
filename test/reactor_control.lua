@@ -12,6 +12,7 @@ local function makePeripheral(active, output)
         isActivelyCooled=function() return active end, getActive=function() return true end,
         getEnergyStats=function() return {energyProducedLastTick=active and 0 or output, energyStored=500, energyCapacity=1000} end,
         getControlRodsLevels=function() return rods end, getNumberOfControlRods=function() return 4 end,
+        setActive=function() end,
         getFuelStats=function() return {fuelConsumedLastTick=1000} end, getFuelTemperature=function() return 100 end,
         getCasingTemperature=function() return 100 end, getWasteAmount=function() return 0 end,
         getHotFluidProducedLastTick=function() return active and output or 0 end,
@@ -39,10 +40,17 @@ assert(average(srods) < 80, "positive steam target did not withdraw rods")
 local before = average(prods)
 assert(passive:updateRods(nil) == false and average(prods) == before, "missing target changed output")
 assert(passive.controlStatus == "NO_TARGET")
+local incompatibleBefore = average(prods)
+local badOK, badErr = passive:updateRods({unit="steam", target=1})
+assert(badOK == false and badErr and passive.controlStatus == "NO_TARGET" and average(prods) == incompatibleBefore)
 for _=1,10 do assert(passive:updateRods({unit="rf", target=0})) end
 assert(average(prods) > before, "zero target did not insert rods")
 CONTROL_CONFIG.rodWriteThreshold = 100
 local writesBefore = average(prods)
-passive:updateRods({unit="rf", target=1})
-assert(average(prods) == writesBefore, "rod write threshold did not suppress small change")
+passive:updateRods({unit="rf", target=100})
+assert(average(prods) == writesBefore and passive.controlStatus == "TRACKING", "rod write threshold did not suppress small change")
+local throwing = Reactor.newExtremeReactor("passive")
+throwing.setRodLevels = function() error("actuator unavailable") end
+local writeOK, writeErr = throwing:updateRods({unit="rf", target=60000})
+assert(writeOK == false and writeErr and throwing.controlStatus == "WRITE_FAILED")
 print("reactor control: ok")
