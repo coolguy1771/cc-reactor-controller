@@ -166,3 +166,63 @@ ALL CHECKS PASSED
   preventing a cold spin-up observation from weakening the normal RPM floor.
 - Existing idle-RPM simulator checks now assert the dispatch contract: zero allocations close
   coils/steam, while all commanded flows remain within the physical turbine limit.
+
+## Fix Round 3 RED/GREEN
+
+### RED
+
+The controller/world regression was first run with the former global flywheel target expression
+restored. It incorrectly treated an explicitly idle turbine as a normal zero-target shutdown,
+which prevented flywheel storage and its overspeed safety path:
+
+```powershell
+& .superpowers/tools/lua54/lua54.exe test/sim.lua
+```
+
+```text
+PASS  turbine dispatch: high load raises target/cap/granted flow/RF (1193/1234/560/9152 -> 2000/2000/2000/9421)
+PASS  turbine dispatch: zero demand closes target, cap, granted flow, RF, and coils
+PASS  flywheel mixed demand: positive target remains target-driven (cap 350 flow 350)
+FAIL  flywheel mixed demand: zero target idle turbine may spin/store
+FAIL  flywheel mixed demand: idle overspeed SCRAMs (rpm 1658 cap 0)
+```
+
+### GREEN
+
+The controller now preserves every positive target while flywheel is armed and omits only an
+explicitly zero-RF target, allowing that idle turbine's legacy flywheel path to operate. The
+regression uses `runTicks` and the real proportional world steam grant; it compares dispatcher
+target, requested cap, fake `flowLast`, RF/t, and coils without calling `fakeTurbine.step`
+directly.
+
+```powershell
+& .superpowers/tools/lua54/lua54.exe test/storage.lua
+& .superpowers/tools/lua54/lua54.exe test/dispatcher.lua
+& .superpowers/tools/lua54/lua54.exe test/device_sampling.lua
+& .superpowers/tools/lua54/lua54.exe test/reactor_control.lua
+& .superpowers/tools/lua54/lua54.exe test/turbine_dispatch.lua
+& .superpowers/tools/lua54/lua54.exe test/sim.lua
+```
+
+```text
+storage tests passed
+dispatcher tests passed
+device sampling ok
+reactor control: ok
+turbine dispatch ok
+PASS  turbine dispatch: high load raises target/cap/granted flow/RF (1193/1234/560/9152 -> 2000/2000/2000/9421)
+PASS  turbine dispatch: zero demand closes target, cap, granted flow, RF, and coils
+PASS  flywheel mixed demand: positive target remains target-driven (cap 350 flow 350)
+PASS  flywheel mixed demand: positive target does not become flywheel full-throttle
+PASS  flywheel mixed demand: zero target idle turbine may spin/store
+PASS  flywheel mixed demand: idle overspeed SCRAMs (rpm 1305 cap 0)
+ALL CHECKS PASSED
+```
+
+### Fix-round decisions
+
+- Flywheel target suppression is per turbine and depends on `rfTarget <= 0`; it is never a
+  global override of a positive allocation.
+- The demand regression drives the real controller and simulator through `runTicks`, measuring
+  the simulator's granted steam (`flowLast`) and generation rather than manually advancing rotor
+  physics.

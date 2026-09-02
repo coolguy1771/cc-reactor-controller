@@ -744,10 +744,13 @@ local function controlTurbines(steer, dispatch, context, probeID)
         local turbine = _G.turbines[id]
         if not unavailableDevices[id] then
             local target = dispatch and dispatch.turbines[id]
-            -- Flywheel mode owns the throttle while it intentionally stores rotor energy.
-            -- It must not be converted into a zero-target idle command before its overspeed
-            -- governor and SCRAM path can run.
-            local actuatorTarget = CONTROL_CONFIG.flywheelMode and nil or target
+            -- Flywheel owns the throttle only for an explicitly idle turbine. Positive demand
+            -- remains a dispatch command even when flywheel mode is armed; otherwise a single
+            -- idle peer could make every turbine ignore its allocation.
+            local actuatorTarget = target
+            if CONTROL_CONFIG.flywheelMode and target and (target.rfTarget or 0) <= 0 then
+                actuatorTarget = nil
+            end
             local deviceContext = {}
             for key, value in pairs(context) do deviceContext[key] = value end
             -- Only one rotating turbine can perform overspeed capacity learning in a tick.

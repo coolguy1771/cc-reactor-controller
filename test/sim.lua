@@ -953,39 +953,93 @@ runTicks(1)
 check((_G.overallStats.storage or {}).delta == 0,
     "storage detach: delta baseline resets for one tick")
 
--- The controller's dispatched turbine target is the final steering input: under identical
--- safe-RPM starts, higher allocated flow must command and produce materially more RF; a
--- near-zero allocation must actively close steam and coils rather than falling through to the
--- legacy governor's buffer hysteresis.
+-- The real controller/world loop must translate a higher load allocation into a higher requested
+-- cap and a higher granted steam flow/RF; zero demand must actively close steam/coils.  These
+-- cases deliberately use runTicks so world.step performs the proportional steam grant.
 local dispatchTurbine = world.fakeTurbines[1]
 local dispatchTurbineID = "BigReactors-Turbine_1"
 local turbineWrapper = _G.turbines[dispatchTurbineID]
-local savedDispatch = _G.overallStats.dispatch
-local function measureDispatchedTurbine(flowTarget, rfTarget)
-    dispatchTurbine.active, turbineWrapper.active = true, true
-    dispatchTurbine.rpm, dispatchTurbine.cap, dispatchTurbine.coils, dispatchTurbine.buffer = 1900, 0, true, 0
-    turbineWrapper.rpm, turbineWrapper.averageRPM = 1900, 1900
+local function resetDispatchWorld(demand, stored)
+    CONTROL_CONFIG.flywheelMode = false
+    SafetyManager.resetScram("dispatch measurement")
+    SafetyManager.requestMode("AUTO_OUTPUT", "dispatch measurement")
+    if demand == 0 then fillAllElectricalStores() end
+    world.baseDraw, world.externalStore.stored = demand, stored
+    world.steamTank.amount = world.steamTank.capacity
+    dispatchTurbine.active, dispatchTurbine.rpm, dispatchTurbine.cap, dispatchTurbine.coils, dispatchTurbine.buffer = true, 1900, 0, false, 0
+    turbineWrapper.active, turbineWrapper.rpm, turbineWrapper.averageRPM = true, 1900, 1900
     turbineWrapper.energyStored, turbineWrapper.energyCapacity = 0, dispatchTurbine.bufferCap
-    turbineWrapper.pid.integral = 0
-    turbineWrapper.bestSustainedRPM = 0
+    turbineWrapper.pid.integral, turbineWrapper.bestSustainedRPM = 0, 0
     turbineWrapper.lastWrittenSteamCap, turbineWrapper.lastWrittenCoils = -1, nil
-    _G.overallStats.dispatch = { reactors=_G.overallStats.reactorTargets or {}, turbines={
-        [dispatchTurbineID] = { rfTarget=rfTarget, flowTarget=flowTarget, rpmLimit=2400 },
-    }, availableRF=100000 }
-    __test.applyDispatch(true)
-    local cap = dispatchTurbine.cap
-    for _ = 1, 30 do dispatchTurbine.step(cap) end
-    return cap, dispatchTurbine.genLast, dispatchTurbine.coils
 end
-local lowFlow, lowRF = measureDispatchedTurbine(200, 200)
-local highFlow, highRF = measureDispatchedTurbine(1800, 1800)
-local zeroFlow, _, zeroCoils = measureDispatchedTurbine(0, 0)
-_G.overallStats.dispatch = savedDispatch
-check(highFlow >= lowFlow * 2 and highRF > lowRF * 1.20,
-    string.format("turbine dispatch: higher allocation raises commanded flow/RF (%d/%.0f -> %d/%.0f)",
-        lowFlow, lowRF, highFlow, highRF))
-check(zeroFlow == 0 and zeroCoils == false,
-    "turbine dispatch: near-zero allocation closes steam and coils")
+local function measureLoadDispatch(demand, stored)
+    resetDispatchWorld(demand, stored)
+    local targetFlow, cap, actualFlow, rf = 0, 0, 0, 0
+    runTicks(12, function()
+        local target = ((_G.overallStats.turbineTargets or {})[dispatchTurbineID] or {})
+        targetFlow, cap = target.flowTarget or 0, dispatchTurbine.cap
+        actualFlow, rf = dispatchTurbine.flowLast, dispatchTurbine.genLast
+    end)
+    return targetFlow, cap, actualFlow, rf, dispatchTurbine.coils
+end
+local lowTarget, lowCap, lowFlow, lowRF = measureLoadDispatch(10000, 0)
+local highTarget, highCap, highFlow, highRF = measureLoadDispatch(500000, 0)
+local zeroTarget, zeroCap, zeroFlow, zeroRF, zeroCoils = measureLoadDispatch(0, world.externalStore.capacity)
+check(highTarget > lowTarget and highCap > lowCap and highFlow > lowFlow and highRF > lowRF,
+    string.format("turbine dispatch: high load raises target/cap/granted flow/RF (%.0f/%d/%.0f/%.0f -> %.0f/%d/%.0f/%.0f)",
+        lowTarget, lowCap, lowFlow, lowRF, highTarget, highCap, highFlow, highRF))
+check(zeroTarget == 0 and zeroCap == 0 and zeroFlow == 0 and zeroRF == 0 and not zeroCoils,
+    "turbine dispatch: zero demand closes target, cap, granted flow, RF, and coils")
+
+-- With flywheel armed, a positive allocation remains a normal target-driven generator while an
+-- explicitly idle peer is permitted to use the flywheel path.  A controller/world tick then
+-- proves that the idle peer's overspeed still SCRAMs the system.
+local flywheelIdle = world.fakeTurbines[2]
+local flywheelIdleID = "BigReactors-Turbine_2"
+local flywheelIdleWrapper = _G.turbines[flywheelIdleID]
+SafetyManager.resetScram("flywheel mixed demand")
+SafetyManager.requestMode("AUTO_OUTPUT", "flywheel mixed demand")
+CONTROL_CONFIG.flywheelMode = true
+CONTROL_CONFIG.flywheelCeilingRPM = 0
+world.steamTank.amount = world.steamTank.capacity
+for _, pair in ipairs({ {dispatchTurbine, turbineWrapper, 1900}, {flywheelIdle, flywheelIdleWrapper, 1800} }) do
+    local fake, wrapper, rpm = pair[1], pair[2], pair[3]
+    fake.active, fake.rpm, fake.cap, fake.coils, fake.buffer = true, rpm, 0, false, fake.bufferCap
+    wrapper.active, wrapper.rpm, wrapper.averageRPM = true, rpm, rpm
+    wrapper.energyStored, wrapper.energyCapacity, wrapper.desiredCoils = fake.bufferCap, fake.bufferCap, false
+    wrapper.lastWrittenSteamCap, wrapper.lastWrittenCoils = -1, nil
+end
+for i = 3, #world.fakeTurbines do
+    world.fakeTurbines[i].active = false
+    _G.turbines["BigReactors-Turbine_" .. i].active = false
+end
+local savedMixedDispatch = _G.overallStats.dispatch
+_G.overallStats.dispatch = { reactors=_G.overallStats.reactorTargets or {}, turbines={
+    [dispatchTurbineID] = {rfTarget=200, flowTarget=200, rpmLimit=2400},
+    [flywheelIdleID] = {rfTarget=0, flowTarget=0, rpmLimit=2400},
+}, availableRF=100000 }
+__test.applyDispatch(true)
+local positiveCap, idleCap = dispatchTurbine.cap, flywheelIdle.cap
+runTicks(1)
+local positiveFlow = dispatchTurbine.flowLast
+runTicks(40)
+_G.overallStats.dispatch = savedMixedDispatch
+check(positiveCap > 0 and positiveFlow > 0,
+    string.format("flywheel mixed demand: positive target remains target-driven (cap %d flow %.0f)",
+        positiveCap, positiveFlow))
+check(positiveCap <= 400 and dispatchTurbine.flowLast <= 400,
+    "flywheel mixed demand: positive target does not become flywheel full-throttle")
+check(idleCap == flywheelIdle.flowMaxMax,
+    "flywheel mixed demand: zero target idle turbine may spin/store")
+check(SafetyManager.state() == "SCRAM",
+    string.format("flywheel mixed demand: idle overspeed SCRAMs (rpm %.0f cap %d)", flywheelIdle.rpm, flywheelIdle.cap))
+CONTROL_CONFIG.flywheelMode = false
+for i, fake in ipairs(world.fakeTurbines) do
+    fake.active = true
+    _G.turbines["BigReactors-Turbine_" .. i].active = true
+end
+SafetyManager.resetScram("dispatch measurement cleanup")
+SafetyManager.requestMode("AUTO_OUTPUT", "dispatch measurement cleanup")
 
 -- One throwing reactor setter is isolated.  Its healthy asymmetric peer receives the newly
 -- redistributed target in the same tick, without a recursive retry of the failed setter.
