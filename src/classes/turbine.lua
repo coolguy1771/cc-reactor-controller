@@ -220,14 +220,14 @@ local Turbine = {
 
         -- 1) SAFETY GOVERNOR -- highest priority, ignores the PI. Runs on every tick.
         if rpm >= ceiling then
-            self:writeSteam(0)
-            self:writeCoils(true)            -- engage coils to brake
+            local ok, err = self:writeSteam(0); if not ok then return false, err end
+            ok, err = self:writeCoils(true); if not ok then return false, err end
             self.pid.integral = 0            -- so we don't slam back to full steam
             return
         elseif rpm >= safe then
-            self:writeCoils(true)
+            local ok, err = self:writeCoils(true); if not ok then return false, err end
             local capped = math.min(self.steamCap, self.flowMaxMax * 0.25)
-            self:writeSteam(capped)
+            ok, err = self:writeSteam(capped); if not ok then return false, err end
             self.pid.integral = math.min(self.pid.integral, capped)
             return
         end
@@ -301,7 +301,7 @@ local Turbine = {
         elseif bufPct >= coilsOffAbove then
             self.desiredCoils = false
         end
-        self:writeCoils(self.desiredCoils)
+        local ok, err = self:writeCoils(self.desiredCoils); if not ok then return false, err end
 
         -- 3a) FLYWHEEL SPIN-UP -- armed + idle: open the throttle fully and let the rotor climb
         --     as high as it can (up to flywheelCeilingRPM if a cap is set; the governor above
@@ -309,7 +309,7 @@ local Turbine = {
         --     PI (when coils engage) start from the right place.
         if config.flywheelMode == true and self.desiredCoils == false then
             self.pid.integral = self.flowMaxMax
-            self:writeSteam(self.flowMaxMax)
+            ok, err = self:writeSteam(self.flowMaxMax); if not ok then return false, err end
             return
         end
 
@@ -320,7 +320,8 @@ local Turbine = {
         end
         self.pid.integral = clamp(self.pid.integral + config.turbineKi * err, 0, self.flowMaxMax)
         local output = clamp(self.pid.integral + config.turbineKp * err, 0, self.flowMaxMax)
-        self:writeSteam(output)
+        ok, err = self:writeSteam(output); if not ok then return false, err end
+        return true
     end,
 }
 
