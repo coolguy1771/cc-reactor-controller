@@ -259,14 +259,14 @@ local Turbine = {
         self.controlStatus = "dispatch"
         local saturated = desiredFlow >= self.flowMaxMax
         local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
-        if context.probeAllowed and storageBelowTarget and saturated and config.sustainedOverspeedEnabled ~= false and
+        if context.probeAllowed and not self.probeStopped and storageBelowTarget and saturated and config.sustainedOverspeedEnabled ~= false and
             context.steady and not context.transient and not context.governorBraking and not context.storageFull then
             self.probeBin = self.probeBin or math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
             self.probeSettledBins = self.probeSettledBins or {}
             self.probeSettledFailures = self.probeSettledFailures or 0
             if self.probeBin >= absoluteLimit then self.controlStatus = "probe-limit" end
         end
-        if context.steady and math.abs((avgRpm or 0) - (self.probeBin or avgRpm or 0)) <= 25 and not context.transient and not context.governorBraking and
+        if self.probeBin and context.steady and math.abs((avgRpm or 0) - self.probeBin) <= 25 and not context.transient and not context.governorBraking and
             not context.flywheelDeceleration and not context.storageFull and self.coilsEngaged then
             local bin = math.floor((avgRpm or 0) / 100) * 100
             self.rpmBinObservations = self.rpmBinObservations or {}
