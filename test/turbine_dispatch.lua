@@ -35,6 +35,7 @@ assert(t.rpmBinObservations and t.rpmBinObservations[1800], "steady sample did n
 
 -- Probe advances one bin per settled evaluation and stops after two distinct misses.
 t.bestSustainedRPM=1800; t.bestContinuousRF=999; t.probeBin=nil; t.probeSettledFailures=0; t.probeSettledBins=nil
+t.rpm,t.averageRPM=1800,1800
 t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true})
 assert(t.probeBin == 1900, "probe did not start at one bounded bin")
 t.averageRPM=1900; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true})
