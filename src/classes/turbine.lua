@@ -77,7 +77,6 @@ local Turbine = {
             return 100
         end
         return self.energyStored / self.energyCapacity * 100
-        return true
     end,
 
     ---@param self Turbine
