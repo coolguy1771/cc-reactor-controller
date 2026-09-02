@@ -3,7 +3,7 @@ dofile("test/cc_stubs.lua")
 dofile("src/classes/deque.lua")
 dofile("src/classes/turbine.lua")
 SECONDS_TO_AVERAGE = 1
-getEntitySetting = function() return nil end
+getEntitySetting = function(_, key) if key == "coilsOnBelowPct" then return 10 elseif key == "coilsOffAbovePct" then return 90 end return nil end
 local fake = { coils = false, flowCap = 0 }
 local p = { getFluidFlowRateMaxMax=function() return 2000 end, getActive=function() return true end,
  getRotorSpeed=function() return 1800 end, getEnergyProducedLastTick=function() return 100 end,
