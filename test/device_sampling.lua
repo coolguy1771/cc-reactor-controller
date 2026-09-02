@@ -4,6 +4,7 @@ dofile("src/classes/deque.lua")
 dofile("src/classes/reactor.lua")
 dofile("src/classes/turbine.lua")
 dofile("src/classes/energybuffer.lua")
+dofile("src/services/dispatcher.lua")
 
 SECONDS_TO_AVERAGE = 1
 CONTROL_CONFIG = { entityOverrides = {} }
@@ -38,4 +39,11 @@ r:update(1); t:update(1)
 assert(calls.reactorEnergyStats == 1, "reactor getEnergyStats must provide output, stored RF, and capacity in one call")
 assert(calls.turbineEnergyProduced == 1 and calls.turbineEnergyStored == 1 and calls.turbineEnergyCapacity == 1, "turbine getters were repeated in one tick")
 assert(r.lastUpdatedTick == 0 or r.energyStored == 20, "constructor must sample tick zero")
+assert(r.energyStored == 20 and r.energyCapacity == 100, "reactor energy sample fields missing")
+assert(r.observeCapacity and t.observeCapacity, "capacity observation interface missing")
+assert(t.capacityRF and t.rfPerSteam ~= nil, "turbine capacity fields missing")
+local before = t.rfPerSteam
+t.coilsEngaged = false; t.steamFlow = 10; t.energyProduced = 100
+t:observeCapacity(100, {steady = true, topologyChanged = false}, {})
+assert(t.rfPerSteam == before, "rfPerSteam learned while coils disengaged")
 print("device sampling ok")

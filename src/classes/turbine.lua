@@ -110,6 +110,16 @@ local Turbine = {
         self.lastUpdatedTick = currentTickNumber
     end,
 
+    observeCapacity = function(self, target, context, config)
+        local o = getEntitySetting(self.id, "maxRFPerTick")
+        if o then self.capacityRF, self.capacityKnown = o, true; return {value=o, known=true} end
+        if getEntitySetting(self.id, "capacityLearning") == false then return {value=self.capacityRF, known=self.capacityKnown} end
+        local result = Dispatcher.learnCapacity({value=self.capacityRF or 1, known=self.capacityKnown == true}, {actual=self.energyProduced, target=target, steady=self.coilsEngaged and context and context.steady == true, transient=context and context.transient}, config)
+        self.capacityRF, self.capacityKnown = math.max(1, result.value), result.known
+        if self.coilsEngaged and self.steamFlow > 0 and context and context.steady and not context.transient then self.rfPerSteam = self.energyProduced / self.steamFlow end
+        return result
+    end,
+
     -- Peripheral-write helpers: only hit the peripheral when the value actually changes,
     -- to keep 20Hz control from spamming the server with method calls.
 
@@ -258,6 +268,8 @@ local function newExtremeTurbine(id)
         coilsEngaged = false,
         desiredCoils = false,
         bladeEfficiency = 0,
+        capacityRF = 1, capacityKnown = false, rfPerSteam = 0,
+        bestSustainedRPM = 0, dispatchTarget = nil,
 
         lastWrittenSteamCap = -1,
         lastWrittenCoils = nil,

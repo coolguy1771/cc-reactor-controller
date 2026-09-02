@@ -112,7 +112,7 @@ end
 ---@field averageSteamProductionRate number
 ---@field averageStoredSteam number
 ---@field averageFuelEfficiency number
----@field getLastRFT function
+---@field getEnergyStats function
 ---@field getRodLevel function
 ---@field getFuelUsage function
 ---@field getWaste function
@@ -195,6 +195,19 @@ local Reactor = {
 
         self:updateAverages()
         self.lastUpdatedTick = currentTickNumber
+    end,
+
+    observeCapacity = function(self, target, context, config)
+        local override = getEntitySetting(self.id, self.activelyCooled and "maxSteamPerTick" or "maxRFPerTick")
+        local disabled = getEntitySetting(self.id, "capacityLearning") == false
+        local actual = self.activelyCooled and self.steamProductionRate or self.lastRFT
+        local key = self.activelyCooled and "capacitySteam" or "capacityRF"
+        local previous = { value = self[key] or math.max(1, actual), known = self.capacityKnown == true, misses = 0 }
+        local result = Dispatcher.learnCapacity(previous, {actual=actual, target=target, steady=context and context.steady ~= false, transient=context and context.transient}, {capacityLearningRate=(config and config.capacityLearningRate)})
+        if override then result.value, result.known = override, true end
+        if disabled then result.value, result.known = previous.value, previous.known end
+        self[key], self.capacityKnown = math.max(1, result.value), result.known
+        return result
     end,
 
     -- The rod control law, run once per tick in auto mode.
@@ -437,6 +450,8 @@ local function newExtremeReactor(id)
     }
     local reactorInstance = {
         id = id,
+        energyStored = 0, energyCapacity = 0, capacityRF = 1, capacitySteam = 1,
+        capacityKnown = false, dispatchTarget = nil,
         pid = pid,
         fuelUsageValues = Deque.new(),
         lastRFTValues = Deque.new(),
