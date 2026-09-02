@@ -209,8 +209,8 @@ local Turbine = {
         end
 
         if rpm >= absoluteLimit then
-            self:writeSteam(0)
-            self:writeCoils(true)
+            local ok, err = self:writeSteam(0); if not ok then return false, err end
+            ok, err = self:writeCoils(true); if not ok then return false, err end
             self.pid.integral = 0
             self.controlStatus = "governor"
             return
@@ -238,19 +238,19 @@ local Turbine = {
         self.dispatchTarget = target
         if (target.rfTarget or 0) <= 0 then
             self.desiredCoils = false
-            self:writeCoils(false)
+            local ok, err = self:writeCoils(false); if not ok then return false, err end
             self.pid.integral = 0
-            self:writeSteam(0)
+            ok, err = self:writeSteam(0); if not ok then return false, err end
             self.controlStatus = context.storageFull and "storage-full" or "idle"
             return
         end
         self.desiredCoils = true
-        self:writeCoils(true)
+        local ok, err = self:writeCoils(true); if not ok then return false, err end
         local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
         local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
         local dispatchErr = rpmBandError(avgRpm, targetRPM, targetRPM)
         self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, self.flowMaxMax)
-        self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, self.flowMaxMax))
+        ok, err = self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, self.flowMaxMax)); if not ok then return false, err end
         self.controlStatus = "dispatch"
         local saturated = desiredFlow >= self.flowMaxMax
         local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
@@ -378,9 +378,12 @@ local function newExtremeTurbine(id)
     setmetatable(instance, { __index = Turbine })
 
     -- Fail closed. SafetyManager starts the turbine only after the full controller self-test.
-    instance.setFluidFlowRateMax(0)
-    instance.setInductorEngaged(true)
-    instance.setActivePeripheral(false)
+    local initOk, initErr = pcall(instance.setFluidFlowRateMax, 0)
+    if not initOk then instance.controlStatus, instance.controlError = "WRITE_FAILED", initErr end
+    initOk, initErr = pcall(instance.setInductorEngaged, true)
+    if not initOk then instance.controlStatus, instance.controlError = "WRITE_FAILED", initErr end
+    initOk, initErr = pcall(instance.setActivePeripheral, false)
+    if not initOk then instance.controlStatus, instance.controlError = "WRITE_FAILED", initErr end
     instance.active = false
     instance.lastWrittenSteamCap = 0
     instance.lastWrittenCoils = true
