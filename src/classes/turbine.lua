@@ -145,6 +145,7 @@ local Turbine = {
             self.lastWrittenSteamCap = amount
             self.steamCap = amount
         end
+        return true
     end,
 
     ---@param self Turbine
@@ -156,6 +157,7 @@ local Turbine = {
             self.lastWrittenCoils = engaged
             self.coilsEngaged = engaged
         end
+        return true
     end,
 
     ---@param self Turbine
