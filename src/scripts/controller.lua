@@ -175,26 +175,6 @@ local function publishDispatch(storage)
     if not storageCoordinator or not Dispatcher then return nil end
     local input = buildDispatchInput(storage)
     local dispatch = Dispatcher.allocate(input, CONTROL_CONFIG)
-    if CONTROL_CONFIG.optimizeMode == "efficiency" then
-        computeDispatch(_G.overallStats)
-        for id, target in pairs(_G.overallStats.dispatchTargets or {}) do
-            local reactor = _G.reactors[id]
-            if reactor then
-                local sweet = reactor.curve and reactor.bestEffLevel and reactor.curve[reactor.bestEffLevel]
-                if sweet and type(sweet.out) == "number" then target = math.min(target, sweet.out) end
-                dispatch.reactors[id] = { unit=reactor.activelyCooled and "steam" or "rf", target=target }
-            end
-        end
-        -- A calibrated device remains bounded at its own sweet spot even when another
-        -- uncalibrated peer prevents the all-or-nothing merit preview from being published.
-        for id, reactor in pairs(_G.reactors) do
-            local sweet = reactor.curve and reactor.bestEffLevel and reactor.curve[reactor.bestEffLevel]
-            local target = dispatch.reactors[id]
-            if sweet and target and type(sweet.out) == "number" then
-                target.target = math.min(target.target or 0, sweet.out)
-            end
-        end
-    end
     -- Turbine RPM governor owns actual steam flow.  Cascade active-reactor targets to the
     -- measured flow in each isolated group, so a transient turbine throttle cannot make an
     -- active reactor manufacture steam merely because its RF allocation is larger.
@@ -309,26 +289,15 @@ local function updateOverallStats()
             sources=buildStorageSources(), actualGeneration=s.totalRFT,
             availableGeneration=availableRF, topologyRevision=topologyRevision,
         }, CONTROL_CONFIG)
-        -- At/above the storage ceiling, the observable storage discharge is the reliable
-        -- external draw.  Generation can be clipped by full internal batteries, so using the
-        -- raw generator total here would perpetuate surplus output forever.
-        if storage.fillPct >= (CONTROL_CONFIG.storageTargetMax or 85) then
-            storage.externalDemand = math.max(0, -storage.delta)
-            storage.rechargeCorrection = 0
-            storage.requiredGeneration = storage.externalDemand
-        elseif storage.fillPct <= (CONTROL_CONFIG.storageTargetMin or 50) and storage.delta == 0 then
-            -- An empty grid cannot reveal an unmet load through a storage delta.  Ask every
-            -- currently known source for capacity so the controller recovers instead of
-            -- self-limiting to its last small output sample.
-            storage.requiredGeneration = availableRF
-        end
+        -- Demand-following idled healthy devices. Command the whole plant at max
+        -- output; RPM and steam-tank safety still cap the hardware.
+        storage.requiredGeneration = availableRF
         s.storedLastTick = storage.stored - storage.delta
         s.storedThisTick = storage.stored
         s.capacity = math.max(1, storage.capacity)
         s.rfLost = math.floor(storage.externalDemand + 0.5)
         publishDispatch(storage)
-        -- Retain the calibration/efficiency UI's legacy merit-order preview.  Actuators use
-        -- the storage-aware targets above in every automatic mode.
+        -- Merit-order preview is display-only; actuators always command max output.
         computeDispatch(s)
     else
         -- Keep the pre-dispatch fallback usable for partial test harnesses and old installs.
