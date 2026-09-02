@@ -347,7 +347,7 @@ local function resolveGroupMembership()
     local reactorGroup, turbineGroup = {}, {}
     local groups = CONTROL_CONFIG.steamGroups or {}
     for i, group in ipairs(groups) do
-        for _, rid in ipairs(group.reactors or {}) do reactorGroup[rid] = i end
+        for _, rid in ipairs(group.reactors or group._reactors or {}) do reactorGroup[rid] = i end
         for _, tid in ipairs(group.turbines or {}) do turbineGroup[tid] = i end
     end
     return reactorGroup, turbineGroup

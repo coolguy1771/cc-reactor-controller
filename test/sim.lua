@@ -613,6 +613,12 @@ local groupedTarget = (_G.overallStats.reactorTargets["BigReactors-Reactor_2"] o
 check(math.abs(groupedTarget - g1.consumption) <= math.max(100, g1.consumption * 0.10),
     "separate steam groups: active reactor target excludes default-group turbine flow")
 
+CONTROL_CONFIG.steamGroups = {
+    { _reactors = { "BigReactors-Reactor_2" }, turbines = { "BigReactors-Turbine_1", "BigReactors-Turbine_2" } },
+}
+runTicks(1)
+check(steamReactor.groupId == 1, "_reactors alias assigns steam group membership")
+
 CONTROL_CONFIG.steamGroups = {}
 runTicks(50)
 check(_G.overallStats.hasSteamGroups == false, "empty steamGroups falls back to one network")
