@@ -236,13 +236,6 @@ local Reactor = {
         self.dispatchTarget = target.target
         local rftRodLevel = target.target <= 0 and 100 or iteratePID(self.pid, target.target - currentGenerationRate)
 
-        -- Optimize-efficiency fallback (uncalibrated pool, no dispatch target): never pull rods
-        -- OUT past the calibrated best-efficiency point, trading peak output for fuel efficiency.
-        -- When merit-order dispatch is active its target already encodes this, so skip the clamp.
-        if CONTROL_CONFIG.optimizeMode == "efficiency" and self.bestEffLevel then
-            rftRodLevel = math.max(rftRodLevel, self.bestEffLevel)
-        end
-
         if self.activelyCooled and CONTROL_CONFIG.steamCoordination ~= false then
             local group = _G.overallStats.steamGroups and self.groupId
                 and _G.overallStats.steamGroups[self.groupId]

@@ -8,6 +8,7 @@ dofile("src/classes/reactor.lua")
 
 local function makePeripheral(active, output)
     local rods = {[0]=80,[1]=80,[2]=80,[3]=80}
+    local writes = 0
     local p = {
         isActivelyCooled=function() return active end, getActive=function() return true end,
         getEnergyStats=function() return {energyProducedLastTick=active and 0 or output, energyStored=500, energyCapacity=1000} end,
@@ -17,13 +18,13 @@ local function makePeripheral(active, output)
         getCasingTemperature=function() return 100 end, getWasteAmount=function() return 0 end,
         getHotFluidProducedLastTick=function() return active and output or 0 end,
         getHotFluidAmount=function() return 0 end, getHotFluidAmountMax=function() return 100000 end,
-        setControlRodsLevels=function(levels) for k,v in pairs(levels) do rods[k]=v end end,
+        setControlRodsLevels=function(levels) writes=writes+1; for k,v in pairs(levels) do rods[k]=v end end,
     }
-    return p, rods
+    return p, rods, function() return writes end
 end
 
 local function average(rods) local n,s=0,0; for _,v in pairs(rods) do n=n+1;s=s+v end; return s/n end
-local pp, prods = makePeripheral(false, 0)
+local pp, prods, passiveWrites = makePeripheral(false, 0)
 local sp, srods = makePeripheral(true, 0)
 peripheral.register("passive", "BigReactors-Reactor", pp)
 peripheral.register("steam", "BigReactors-Reactor", sp)
@@ -47,8 +48,15 @@ for _=1,10 do assert(passive:updateRods({unit="rf", target=0})) end
 assert(average(prods) > before, "zero target did not insert rods")
 CONTROL_CONFIG.rodWriteThreshold = 100
 local writesBefore = average(prods)
-passive:updateRods({unit="rf", target=100})
-assert(average(prods) == writesBefore and passive.controlStatus == "TRACKING", "rod write threshold did not suppress small change")
+local writesCount = passiveWrites()
+local thresholdOK = passive:updateRods({unit="rf", target=100})
+assert(thresholdOK == true and passive.controlStatus == "TRACKING" and passiveWrites() == writesCount, "rod write threshold did not suppress small change")
+passive.bestEffLevel = 100
+CONTROL_CONFIG.optimizeMode = "efficiency"
+CONTROL_CONFIG.rodWriteThreshold = 0
+local prior = average(prods)
+passive:updateRods({unit="rf", target=60000})
+assert(average(prods) < prior, "explicit dispatch target was capped at efficiency sweet spot")
 local throwing = Reactor.newExtremeReactor("passive")
 throwing.setRodLevels = function() error("actuator unavailable") end
 local writeOK, writeErr = throwing:updateRods({unit="rf", target=60000})
