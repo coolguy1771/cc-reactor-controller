@@ -266,7 +266,7 @@ local Turbine = {
             self.probeSettledFailures = self.probeSettledFailures or 0
             if self.probeBin >= absoluteLimit then self.controlStatus = "probe-limit" end
         end
-        if self.probeBin and context.steady and math.abs((avgRpm or 0) - self.probeBin) <= 25 and not context.transient and not context.governorBraking and
+        if context.steady and (not self.probeBin or math.abs((avgRpm or 0) - self.probeBin) <= 25) and not context.transient and not context.governorBraking and
             not context.flywheelDeceleration and not context.storageFull and self.coilsEngaged then
             local bin = math.floor((avgRpm or 0) / 100) * 100
             self.rpmBinObservations = self.rpmBinObservations or {}
