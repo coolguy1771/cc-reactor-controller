@@ -17,8 +17,11 @@ local CONFIG_EXTENSION = ".default.conf"
 local OVERRIDE_EXTENSION = ".override.conf"
 local STATE_EXTENSION = ".state.conf"
 
-local function isTableEmpty(table)
-    for _, _ in pairs(table) do
+local function isTableEmpty(value)
+    if type(value) ~= "table" then
+        return true
+    end
+    for _, _ in pairs(value) do
         return false
     end
     return true
@@ -41,7 +44,11 @@ local function readFileAndReturnDeserialized(path)
     end
     local contents = file.readAll()
     file.close()
-    return textutils.unserialise(contents)
+    local data = textutils.unserialise(contents or "")
+    if type(data) ~= "table" then
+        return {}
+    end
+    return data
 end
 
 local function readState(stateID)
@@ -57,6 +64,9 @@ local function readConfigOverrides(configID)
 end
 
 local function spread(source, destination)
+    if type(source) ~= "table" or type(destination) ~= "table" then
+        return
+    end
     for key, value in pairs(source) do
         destination[key] = value
     end
