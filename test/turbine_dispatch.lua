@@ -115,3 +115,13 @@ t.rpm,t.averageRPM=2100,2100; cfg.entityOverrides={t={sustainedOverspeedLimitRPM
 local _,_,s3=at(2099,2200,2300,2100); assert(s3=="dispatch"); local _,_,s30=at(2100,2200,2300,2100); assert(s30=="governor")
 cfg.entityOverrides={}
 print("finite limit behavior ok")
+
+local invalidGates={"probeAllowed","unsaturated","storageFull","disabled","unsteady","transient","governorBraking","flywheelDeceleration","storageFullContext"}
+for _,name in ipairs(invalidGates) do
+ t.probeBin=nil; t.probeStopped=false; t.probeSettledFailures=0; t.probeSettledBins={}; t.rpm,t.averageRPM=1800,1800; t.energyStored,t.energyCapacity=0,100
+ local x={probeAllowed=true,steady=true}; local flow=2000
+ if name=="probeAllowed" then x.probeAllowed=false elseif name=="unsaturated" then flow=100 elseif name=="storageFull" then t.energyStored=100 elseif name=="disabled" then cfg.sustainedOverspeedEnabled=false elseif name=="unsteady" then x.steady=false elseif name=="transient" then x.transient=true elseif name=="governorBraking" then x.governorBraking=true elseif name=="flywheelDeceleration" then x.flywheelDeceleration=true elseif name=="storageFullContext" then x.storageFull=true end
+ t:updateControl(cfg,true,{rfTarget=1,flowTarget=flow,rpmLimit=2400},x); assert(t.probeBin==nil and t.probeSettledFailures==0 and next(t.probeSettledBins)==nil,name.." gate initialized probe")
+ cfg.sustainedOverspeedEnabled=true
+end
+print("invalid probe gates ok")
