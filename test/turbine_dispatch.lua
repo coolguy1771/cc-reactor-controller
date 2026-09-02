@@ -34,15 +34,15 @@ t:updateControl(cfg, true, {rfTarget=5000,flowTarget=2000,rpmLimit=2400}, {stead
 assert(t.rpmBinObservations and t.rpmBinObservations[1800], "steady sample did not update observation bin")
 
 -- Probe advances one bin per settled evaluation and stops after two distinct misses.
-t.bestSustainedRPM=1800; t.bestContinuousRF=999; t.probeBin=nil; t.probeSettledFailures=0; t.probeSettledBins=nil
+t.bestSustainedRPM=1800; t.bestContinuousRF=999; t.energyProduced=100; t.probeBin=nil; t.probeStopped=false; t.probeSettledFailures=0; t.probeSettledBins={}
 t.rpm,t.averageRPM=1800,1800
 t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true})
-assert(t.probeBin == 1900, "probe did not start at exact next bin")
-t.averageRPM=1900; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true})
-assert(t.probeBin == 2000, "probe did not advance exactly 100 RPM")
-t.averageRPM=1900; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true})
-t.averageRPM=2000; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true})
-assert(t.probeBin == 2400, "probe did not stop after two distinct settled non-improvements")
+assert(t.probeBin == 1900 and t.probeSettledFailures==0)
+t.averageRPM=1850; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true}); assert(t.probeBin==1900 and t.probeSettledFailures==0 and not t.probeSettledBins[1900])
+t.averageRPM=1900; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true}); assert(t.probeSettledBins[1900] and t.probeSettledFailures==1 and t.probeBin==2000)
+t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true}); assert(t.probeSettledFailures==1 and t.probeBin==2000)
+t.averageRPM=2000; t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true}); assert(t.probeSettledBins[2000] and t.probeSettledFailures==2 and t.probeStopped==true and t.probeBin==nil)
+t:updateControl(cfg,true,{rfTarget=5000,flowTarget=2000,rpmLimit=2400},{probeAllowed=true,steady=true}); assert(t.probeStopped==true and t.probeSettledFailures==2 and t.probeBin==nil)
 
 -- Protected writes return failures; constructor failures remain discoverable.
 local oldSteam, oldCoil = t.setFluidFlowRateMax, t.setInductorEngaged

@@ -249,7 +249,7 @@ local Turbine = {
         self.desiredCoils = true
         local ok, err = self:writeCoils(true); if not ok then return false, err end
         local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
-        if context.probeAllowed and not self.probeBin and config.sustainedOverspeedEnabled ~= false then
+        if context.probeAllowed and not self.probeStopped and not self.probeBin and config.sustainedOverspeedEnabled ~= false then
             self.probeBin = math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
         end
         local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
@@ -280,7 +280,7 @@ local Turbine = {
             elseif (self.probeBin or 0) > 0 and not self.probeSettledBins[bin] then
                 self.probeSettledBins[bin] = true
                 self.probeSettledFailures = (self.probeSettledFailures or 0) + 1
-                if self.probeSettledFailures >= 2 then self.probeBin = absoluteLimit else self.probeBin = math.min(self.probeBin + 100, absoluteLimit) end
+                if self.probeSettledFailures >= 2 then self.probeStopped = true; self.probeBin = nil else self.probeBin = math.min(self.probeBin + 100, absoluteLimit) end
             end
         end
         return
