@@ -59,10 +59,10 @@ for _, lim in ipairs({nil, 0/0, math.huge, -math.huge}) do
   assert(ok, "non-finite sustained limit escaped safely")
 end
 cfg.entityOverrides.t = {sustainedOverspeedLimitRPM=2300}
-t:updateControl(cfg, false, {rfTarget=1,flowTarget=1,rpmLimit=2200},{})
+ t:updateControl(cfg, true, {rfTarget=1,flowTarget=1,rpmLimit=2200},{})
 assert(t.dispatchTarget.rpmLimit == 2200, "valid target limit not accepted")
 cfg.entityOverrides.t.sustainedOverspeedLimitRPM=2100
-t:updateControl(cfg, false, {rfTarget=1,flowTarget=1,rpmLimit=2200},{})
+ t:updateControl(cfg, true, {rfTarget=1,flowTarget=1,rpmLimit=2200},{})
 assert(t.controlStatus == "governor" or t.dispatchTarget.rpmLimit == 2200, "entity precedence path failed")
 cfg.entityOverrides = {}
 
