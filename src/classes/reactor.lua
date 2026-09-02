@@ -222,14 +222,23 @@ local Reactor = {
     -- down to 0 as the buffer strays a quarter-band away (pure buffer correction, decisive).
     -- The blended error then feeds one PID step whose output is the rod level.
     ---@param self Reactor
-    updateRods = function (self)
+    updateRods = function (self, target)
         if not self.active then
-            return
+            return false, "reactor inactive"
         end
 
-        -- Passive (RF) reactor: track the aggregate energy buffer & grid drain.
-        -- Actively cooled (steam) reactor: track the aggregate steam buffer & the turbines'
-        -- actual steam consumption -> production matches demand, no excess steam is created.
+        local expectedUnit = self.activelyCooled and "steam" or "rf"
+        if type(target) ~= "table" or target.unit ~= expectedUnit or type(target.target) ~= "number" then
+            self.controlStatus = "NO_TARGET"
+            return false, "missing or incompatible dispatch target"
+        end
+        local currentGenerationRate = self.activelyCooled and self.averageSteamProductionRate or self.averageLastRFT
+        self.dispatchTarget = target.target
+        local rftRodLevel = target.target <= 0 and 100 or iteratePID(self.pid, target.target - currentGenerationRate)
+
+        -- Explicit dispatch targets are already allocated per device; no aggregate blending.
+        local hasDispatch = false
+        if false then
         local currentGenerationRate = self.averageLastRFT
         local currentStoredAmount = _G.overallStats.storedThisTick
         local capacity = _G.overallStats.capacity
@@ -251,8 +260,7 @@ local Reactor = {
                 capacity = _G.overallStats.steamCapacity
                 targetGenerationRate = _G.overallStats.steamConsumedPerReactor or _G.overallStats.steamConsumedLastTick
             end
-        end
-
+            end
         -- Efficiency merit-order dispatch: when the controller has assigned this reactor a target
         -- (efficiency mode, pool fully calibrated), chase that instead of the even per-reactor
         -- share. The assignment already encodes "run the efficient reactors, idle the rest".
@@ -296,7 +304,8 @@ local Reactor = {
         local W_RF = (1 - W_RFT)
 
         local combinedError = W_RFT * errorRFT + W_RF * errorRF
-        local rftRodLevel = iteratePID(self.pid, combinedError)
+        rftRodLevel = iteratePID(self.pid, combinedError)
+        end
 
         -- Optimize-efficiency fallback (uncalibrated pool, no dispatch target): never pull rods
         -- OUT past the calibrated best-efficiency point, trading peak output for fuel efficiency.
@@ -322,8 +331,14 @@ local Reactor = {
             and math.abs(rftRodLevel - self.lastWrittenRodLevel) < threshold then
             return
         end
-        self.setRodLevels(rftRodLevel)
+        local ok, err = pcall(self.setRodLevels, rftRodLevel)
+        if not ok then
+            self.controlStatus = "WRITE_FAILED"
+            return false, err
+        end
         self.lastWrittenRodLevel = rftRodLevel
+        self.controlStatus = "TRACKING"
+        return true
     end,
 
     -- Efficiency calibration (feature 6). A sweep drives the rods across 0..100% in 5% steps,
