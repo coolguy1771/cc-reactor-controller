@@ -744,7 +744,10 @@ local function controlTurbines(steer, dispatch, context, probeID)
         local turbine = _G.turbines[id]
         if not unavailableDevices[id] then
             local target = dispatch and dispatch.turbines[id]
-            local actuatorTarget = target
+            -- Flywheel mode owns the throttle while it intentionally stores rotor energy.
+            -- It must not be converted into a zero-target idle command before its overspeed
+            -- governor and SCRAM path can run.
+            local actuatorTarget = CONTROL_CONFIG.flywheelMode and nil or target
             local deviceContext = {}
             for key, value in pairs(context) do deviceContext[key] = value end
             -- Only one rotating turbine can perform overspeed capacity learning in a tick.
@@ -754,16 +757,18 @@ local function controlTurbines(steer, dispatch, context, probeID)
             -- all other turbines remain observationally inert this tick.
             local rpmMin = getEntitySetting(id, "rpmMin") or getEntitySetting(id, "idleRPM")
                 or CONTROL_CONFIG.rpmMin or CONTROL_CONFIG.idleRPM or 1800
+            if (turbine.bestSustainedRPM or 0) > 0 and turbine.bestSustainedRPM < rpmMin then
+                turbine.bestSustainedRPM = 0
+            end
             deviceContext.steady = deviceContext.probeAllowed and turbine.averageRPM >= rpmMin - 25
             local healthy = protectedCall(id, function()
-                return turbine:updateControl(CONTROL_CONFIG, false, actuatorTarget, deviceContext)
+                return turbine:updateControl(CONTROL_CONFIG, false, nil, deviceContext)
             end)
-            -- Keep the established governor as the final RPM/safety authority after it has
-            -- consumed the explicit dispatch target.  This preserves flywheel and idle bands
-            -- while target flow remains an input to the device's normal dispatch pass.
-            if healthy then
+            -- The RPM/safety governor runs every tick. Only a scheduled steering pass may
+            -- consume a dispatch target, so no later nil-target governor pass can overwrite it.
+            if healthy and steer then
                 healthy = protectedCall(id, function()
-                    return turbine:updateControl(CONTROL_CONFIG, steer, nil, deviceContext)
+                    return turbine:updateControl(CONTROL_CONFIG, true, actuatorTarget, deviceContext)
                 end)
             end
             if healthy and turbine.observeCapacity and actuatorTarget then
@@ -968,6 +973,7 @@ end
 _G.__test = {
     runLoop = runLoop,
     updateOverallStats = updateOverallStats,
+    applyDispatch = applyDispatch,
     handlePeripheralAttach = handlePeripheralAttach,
     handlePeripheralDetach = handlePeripheralDetach,
     syncConfigGlobals = syncConfigGlobals,

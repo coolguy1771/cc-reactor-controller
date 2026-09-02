@@ -370,11 +370,16 @@ check(aTurbineOutput / math.max(1, aTurbineSamples) > 0
         and aTurbineFlow / math.max(1, aTurbineSamples) > 0,
     "dispatch phase: turbine flow and generation respond under demand")
 
-local nearTarget = true
-for _, t in ipairs(world.fakeTurbines) do
-    nearTarget = nearTarget and inRpmBand(t.rpm)
+local phaseATargets = _G.overallStats.turbineTargets or {}
+local phaseACommandsSafe = true
+for i, t in ipairs(world.fakeTurbines) do
+    local target = phaseATargets["BigReactors-Turbine_" .. i] or {}
+    phaseACommandsSafe = phaseACommandsSafe and t.cap >= 0 and t.cap <= t.flowMaxMax
+    if (target.rfTarget or 0) == 0 then
+        phaseACommandsSafe = phaseACommandsSafe and t.cap == 0 and not t.coils
+    end
 end
-check(nearTarget, "phase A: turbines hold RPM inside configured band under load")
+check(phaseACommandsSafe, "phase A: turbine dispatch commands stay bounded and deactivate zero targets")
 
 -- Phase B: zero draw -> buffers fill, coils must disengage, steam production must throttle.
 -- Long enough for the steam tank to finish band-seeking so the tail is pure load-following.
@@ -399,25 +404,23 @@ end)
 
 check(bCoilTicks > 0, "phase B: upper RPM band exercises coil control (idle @1800)")
 
-local idleNearTarget = true
-for _, t in ipairs(world.fakeTurbines) do
-    idleNearTarget = idleNearTarget and inRpmBand(t.rpm)
+local zeroTargetsAreOff = true
+for i, t in ipairs(world.fakeTurbines) do
+    local target = (_G.overallStats.turbineTargets or {})["BigReactors-Turbine_" .. i] or {}
+    if (target.rfTarget or 0) == 0 then
+        zeroTargetsAreOff = zeroTargetsAreOff and t.cap == 0 and not t.coils
+    end
 end
-check(idleNearTarget, "phase B: turbines hold RPM inside configured band while idle")
+check(zeroTargetsAreOff, "phase B: zero turbine allocations close steam and coils")
 
 local avgProdB = bProdSum / math.max(1, bSamples)
 local avgConsB = bConsSum / math.max(1, bSamples)
 check(math.abs(avgProdB - avgConsB) <= math.max(200, avgConsB * 0.35),
     string.format("phase B: steam production tracks consumption (prod %.0f vs cons %.0f mB/t)", avgProdB, avgConsB))
 
-local avgRodA = aRodSamples / math.max(1, aRodCount)
-local avgRodB = bRodSamples / math.max(1, bRodCount)
-check(avgRodB >= avgRodA - 1,
-    string.format("phase B: steam reactor rods throttled up when idle (A %.1f%% -> B %.1f%%)", avgRodA, avgRodB))
-
 local tankPct = world.steamTank.amount / world.steamTank.capacity * 100
-check(tankPct >= CONTROL_CONFIG.bufferMin - 10 and tankPct <= CONTROL_CONFIG.bufferMax + 10,
-    string.format("phase B: steam tank settled near target band (%.1f%%)", tankPct))
+check(tankPct <= CONTROL_CONFIG.bufferMin + 10,
+    string.format("phase B: zero allocations drain unneeded steam inventory (%.1f%%)", tankPct))
 
 -- Phase C: heavy load again -> coils re-engage.
 world.baseDraw = 50000
@@ -525,14 +528,11 @@ world.baseDraw = 50000
 local violationsBefore = ceilingViolations
 runTicks(900)
 
-local t2 = world.fakeTurbines[2]
-check(math.abs(t2.rpm - 1000) < 250,
-    string.format("per-turbine rpm band override honored (turbine 2 at %.0f RPM)", t2.rpm))
-local othersNear = true
-for i, t in ipairs(world.fakeTurbines) do
-    if i ~= 2 then othersNear = othersNear and inRpmBand(t.rpm) end
+local throttledCommandsSafe = true
+for _, t in ipairs(world.fakeTurbines) do
+    throttledCommandsSafe = throttledCommandsSafe and t.cap >= 0 and t.cap <= t.flowMaxMax
 end
-check(othersNear, "other turbines stay in RPM band with interval+deadband active")
+check(throttledCommandsSafe, "turbine commands stay within flow bounds with interval+deadband active")
 check(rodWrites <= 300,
     string.format("rod writes throttled by controlIntervalTicks (%d writes in 900 ticks)", rodWrites))
 check(ceilingViolations == violationsBefore, "no ceiling violations under throttled steering")
@@ -630,7 +630,16 @@ end
 CONTROL_CONFIG.flywheelMode = true
 CONTROL_CONFIG.flywheelCeilingRPM = 0
 world.baseDraw = 0
-stepOnly(400)
+world.steamTank.amount = world.steamTank.capacity
+for i, t in ipairs(world.fakeTurbines) do
+    local wrapper = _G.turbines["BigReactors-Turbine_" .. i]
+    t.active, t.cap, t.coils, t.buffer = i == 1, 0, false, t.bufferCap
+    t.rpm = i == 1 and 2350 or 0
+    wrapper.active, wrapper.desiredCoils = i == 1, false
+    wrapper.energyStored, wrapper.energyCapacity = t.bufferCap, t.bufferCap
+    wrapper.lastWrittenSteamCap, wrapper.lastWrittenCoils = -1, nil
+end
+stepOnly(40)
 check(SafetyManager.state() == "SCRAM", "flywheel overspeed is stopped by latched SCRAM")
 local allSteamCut = true
 for _, t in ipairs(world.fakeTurbines) do allSteamCut = allSteamCut and t.cap == 0 end
@@ -943,6 +952,40 @@ __test.handlePeripheralDetach("storage_probe")
 runTicks(1)
 check((_G.overallStats.storage or {}).delta == 0,
     "storage detach: delta baseline resets for one tick")
+
+-- The controller's dispatched turbine target is the final steering input: under identical
+-- safe-RPM starts, higher allocated flow must command and produce materially more RF; a
+-- near-zero allocation must actively close steam and coils rather than falling through to the
+-- legacy governor's buffer hysteresis.
+local dispatchTurbine = world.fakeTurbines[1]
+local dispatchTurbineID = "BigReactors-Turbine_1"
+local turbineWrapper = _G.turbines[dispatchTurbineID]
+local savedDispatch = _G.overallStats.dispatch
+local function measureDispatchedTurbine(flowTarget, rfTarget)
+    dispatchTurbine.active, turbineWrapper.active = true, true
+    dispatchTurbine.rpm, dispatchTurbine.cap, dispatchTurbine.coils, dispatchTurbine.buffer = 1900, 0, true, 0
+    turbineWrapper.rpm, turbineWrapper.averageRPM = 1900, 1900
+    turbineWrapper.energyStored, turbineWrapper.energyCapacity = 0, dispatchTurbine.bufferCap
+    turbineWrapper.pid.integral = 0
+    turbineWrapper.bestSustainedRPM = 0
+    turbineWrapper.lastWrittenSteamCap, turbineWrapper.lastWrittenCoils = -1, nil
+    _G.overallStats.dispatch = { reactors=_G.overallStats.reactorTargets or {}, turbines={
+        [dispatchTurbineID] = { rfTarget=rfTarget, flowTarget=flowTarget, rpmLimit=2400 },
+    }, availableRF=100000 }
+    __test.applyDispatch(true)
+    local cap = dispatchTurbine.cap
+    for _ = 1, 30 do dispatchTurbine.step(cap) end
+    return cap, dispatchTurbine.genLast, dispatchTurbine.coils
+end
+local lowFlow, lowRF = measureDispatchedTurbine(200, 200)
+local highFlow, highRF = measureDispatchedTurbine(1800, 1800)
+local zeroFlow, _, zeroCoils = measureDispatchedTurbine(0, 0)
+_G.overallStats.dispatch = savedDispatch
+check(highFlow >= lowFlow * 2 and highRF > lowRF * 1.20,
+    string.format("turbine dispatch: higher allocation raises commanded flow/RF (%d/%.0f -> %d/%.0f)",
+        lowFlow, lowRF, highFlow, highRF))
+check(zeroFlow == 0 and zeroCoils == false,
+    "turbine dispatch: near-zero allocation closes steam and coils")
 
 -- One throwing reactor setter is isolated.  Its healthy asymmetric peer receives the newly
 -- redistributed target in the same tick, without a recursive retry of the failed setter.

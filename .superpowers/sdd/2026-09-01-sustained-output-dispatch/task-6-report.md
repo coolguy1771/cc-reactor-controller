@@ -108,3 +108,61 @@ ALL CHECKS PASSED
 - Failure removal increments `topologyRevision` and re-samples storage before same-tick redistribution, yielding a zero-delta baseline.
 - One probe ID is selected once per controller tick and reused for the retry allocation; only that turbine receives `probeAllowed`.
 - Simulator assertions now measure generation/flow, observed utilization, external-storage draw, actual capacity recovery, and reset behavior rather than merely inspecting published target tables.
+
+## Fix Round 2 RED/GREEN
+
+### RED
+
+With the original controller ordering restored (target passed to the governor-only call and a
+subsequent steering call given `nil`), the new real-simulator regression failed as expected:
+
+```powershell
+& .superpowers/tools/lua54/lua54.exe test/sim.lua
+```
+
+```text
+FAIL  turbine dispatch: higher allocation raises commanded flow/RF (0/6614 -> 0/6614)
+FAIL  turbine dispatch: near-zero allocation closes steam and coils
+```
+
+The failure confirms that `updateControl(..., false, actuatorTarget, ...)` returns after the
+governor and cannot consume the allocation, while the later `steer=true` nil-target call runs
+the legacy path.
+
+### GREEN
+
+The controller now performs the nil-target safety-governor pass every tick, then performs exactly
+one target-aware `steer=true` pass on steering ticks. The simulator measures the same turbine from
+identical 1900-RPM starts, resets its learned RPM bin between cases, and verifies low, high, and
+zero allocations using actual commanded flow, generated RF/t, coils, and steam flow.
+
+```powershell
+& .superpowers/tools/lua54/lua54.exe test/storage.lua
+& .superpowers/tools/lua54/lua54.exe test/dispatcher.lua
+& .superpowers/tools/lua54/lua54.exe test/device_sampling.lua
+& .superpowers/tools/lua54/lua54.exe test/reactor_control.lua
+& .superpowers/tools/lua54/lua54.exe test/turbine_dispatch.lua
+& .superpowers/tools/lua54/lua54.exe test/sim.lua
+```
+
+```text
+storage tests passed
+dispatcher tests passed
+device sampling ok
+reactor control: ok
+turbine dispatch ok
+PASS  turbine dispatch: higher allocation raises commanded flow/RF (200/6887 -> 1800/9075)
+PASS  turbine dispatch: near-zero allocation closes steam and coils
+PASS  flywheel overspeed is stopped by latched SCRAM
+PASS  SCRAM cuts turbine steam after flywheel overspeed
+ALL CHECKS PASSED
+```
+
+### Fix-round decisions
+
+- Flywheel mode retains its own throttle path so a zero dispatch allocation cannot suppress its
+  overspeed/SCRAM protection sequence.
+- A learned sustained RPM below the configured minimum is discarded before dispatch steering,
+  preventing a cold spin-up observation from weakening the normal RPM floor.
+- Existing idle-RPM simulator checks now assert the dispatch contract: zero allocations close
+  coils/steam, while all commanded flows remain within the physical turbine limit.
