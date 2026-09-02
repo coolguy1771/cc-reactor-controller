@@ -77,3 +77,25 @@ for _, field in ipairs({"setFluidFlowRateMax", "setInductorEngaged"}) do
 end
 peripheral.wrap = function() return p end
 print("turbine finite/failure chunk ok")
+
+-- Chunk B: branch-level protected-write matrix (each branch must return its write error).
+local branchCases = {
+  {name="ceiling", rpm=2500, steer=false, target={rfTarget=1,flowTarget=1,rpmLimit=2400}, steam=true},
+  {name="safe", rpm=1995, steer=false, target={rfTarget=1,flowTarget=1,rpmLimit=2400}, coil=true},
+  {name="idle", rpm=1800, steer=true, target=nil, steam=true},
+  {name="flywheel", rpm=1800, steer=true, target=nil, steam=true, fly=true},
+  {name="legacy-pi", rpm=1800, steer=true, target=nil, steam=true},
+  {name="positive", rpm=1800, steer=true, target={rfTarget=1,flowTarget=100,rpmLimit=2400}, steam=true},
+  {name="zero", rpm=1800, steer=true, target={rfTarget=0,flowTarget=0,rpmLimit=2400}, coil=true},
+}
+for _, c in ipairs(branchCases) do
+  t.rpm,t.averageRPM=c.rpm,c.rpm; t.active=true; t.lastWrittenSteamCap=-1; t.lastWrittenCoils=nil
+  local oldS,oldC=t.setFluidFlowRateMax,t.setInductorEngaged
+  if c.steam then t.setFluidFlowRateMax=function() error(c.name.." steam") end end
+  if c.coil then t.setInductorEngaged=function() error(c.name.." coil") end end
+  local ccfg=cfg; ccfg.flywheelMode=c.fly
+  local ok,err=t:updateControl(ccfg,c.steer,c.target,{})
+  assert(ok==false and err and t.controlStatus=="WRITE_FAILED", c.name.." failure not propagated")
+  t.setFluidFlowRateMax,t.setInductorEngaged=oldS,oldC
+end
+print("turbine branch failure matrix ok")
