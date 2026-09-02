@@ -247,7 +247,9 @@ end
 --endregion
 --region build world
 
-local monitorPeripheral = makeTerm(164, 81)
+-- CC:Tweaked 4x4 advanced monitor at text scale 0.5:
+-- round((4 - 2*(2/16+0.5/16)) / (0.5 * 6/64)) x round((4 - 2*(2/16+0.5/16)) / (0.5 * 9/64))
+local monitorPeripheral = makeTerm(79, 52)
 
 -- Deliberately asymmetric passive capacity catches equal-RF/share dispatch regressions.
 local reactorBig = makeFakeReactor("reactor_large", { maxRF = 80000, rodCount = 9 })
@@ -471,6 +473,10 @@ local mon
 for _, m in pairs(_G.monitors) do mon = m end
 local okDraw = pcall(function() mon:draw() end)
 check(okDraw, "monitor renders without error")
+check(mon.size.x == 79 and mon.size.y == 52, "primary monitor is a 4x4 at scale 0.5")
+check(not mon.tooSmall and (mon.cols or 0) >= 3 and (mon.rows or 0) >= 1
+        and (mon.cardsPerPage or 0) >= 3,
+    "4x4 monitor fits a card grid")
 
 local autoBtn = mon.touch.buttonList["Auto"]
 check(autoBtn ~= nil, "Auto button exists")
@@ -842,6 +848,20 @@ check(#HistoryManager.samples() > 0, "bounded history collects aggregate trend s
 local telemetry = TelemetryExporter.snapshot()
 check(telemetry.state and telemetry.reactors["BigReactors-Reactor_0"],
     "telemetry snapshot includes controller and per-reactor state")
+local telemetryReactor = telemetry.reactors["BigReactors-Reactor_0"] or {}
+local telemetryTurbine = telemetry.turbines["BigReactors-Turbine_1"] or {}
+check(telemetry.storage and telemetry.dispatch
+        and telemetry.storage.fillPct ~= nil and telemetry.storage.externalDemand ~= nil
+        and telemetry.storage.sourceIDs ~= nil
+        and telemetry.dispatch.requiredRF ~= nil and telemetry.dispatch.availableRF ~= nil,
+    "telemetry snapshot includes aggregate storage and dispatch fields")
+check(telemetryReactor.target ~= nil and telemetryReactor.capacity ~= nil
+        and telemetryReactor.utilization ~= nil and telemetryReactor.capacitySource
+        and telemetryReactor.controlStatus and telemetryReactor.degraded ~= nil
+        and telemetryTurbine.target ~= nil and telemetryTurbine.capacity ~= nil
+        and telemetryTurbine.utilization ~= nil and telemetryTurbine.capacitySource
+        and telemetryTurbine.controlStatus and telemetryTurbine.degraded ~= nil,
+    "telemetry snapshot includes per-device target/capacity/utilization/status fields")
 for _, role in ipairs({ "overview", "reactors", "turbines", "alarms", "history" }) do
     mon.role = role
     check(pcall(function() mon:draw() end), "monitor renders " .. role .. " view")
@@ -1083,12 +1103,29 @@ check(highTarget > lowTarget and highCap > lowCap and highFlow > lowFlow and hig
 check(zeroTarget == 0 and zeroCap == 0 and zeroFlow == 0 and zeroRF == 0 and not zeroCoils,
     "turbine dispatch: zero demand closes target, cap, granted flow, RF, and coils")
 
+local savedTurbineOverride = CONTROL_CONFIG.entityOverrides[dispatchTurbineID]
+CONTROL_CONFIG.entityOverrides[dispatchTurbineID] = {dispatchWeight=3, maxFlowPerTick=120}
+resetDispatchWorld(500000, 0)
+local weightedTarget, peerTarget, weightedFlow, weightedCap = 0, 0, 0, 0
+runTicks(12, function()
+    local targets = _G.overallStats.turbineTargets or {}
+    weightedTarget = (targets[dispatchTurbineID] or {}).rfTarget or 0
+    peerTarget = (targets["BigReactors-Turbine_2"] or {}).rfTarget or 0
+    weightedFlow, weightedCap = (targets[dispatchTurbineID] or {}).flowTarget or 0, dispatchTurbine.cap
+end)
+check(weightedTarget > peerTarget * 2 and weightedFlow <= 120 and weightedCap <= 120,
+    string.format("turbine overrides: weight changes share and max flow caps target/actuation (%.0f/%.0f, %.0f/%d)",
+        weightedTarget, peerTarget, weightedFlow, weightedCap))
+CONTROL_CONFIG.entityOverrides[dispatchTurbineID] = savedTurbineOverride
+
 -- With flywheel armed, a positive allocation remains a normal target-driven generator while an
 -- explicitly idle peer is permitted to use the flywheel path.  A controller/world tick then
 -- proves that the idle peer's overspeed still SCRAMs the system.
 local flywheelIdle = world.fakeTurbines[2]
 local flywheelIdleID = "BigReactors-Turbine_2"
 local flywheelIdleWrapper = _G.turbines[flywheelIdleID]
+fillAllElectricalStores()
+world.baseDraw = 0
 SafetyManager.resetScram("flywheel mixed demand")
 SafetyManager.requestMode("AUTO_OUTPUT", "flywheel mixed demand")
 CONTROL_CONFIG.flywheelMode = true

@@ -19,6 +19,9 @@ local cfg = {entityOverrides={}, rpmMin=1800, rpmMax=2000, safeRPM=1990, ceiling
  sustainedOverspeedLimitRPM=2400, steamWriteThreshold=5}
 t:updateControl(cfg,true,{rfTarget=5000,flowTarget=1500,rpmLimit=2400},{})
 assert(fake.coils and fake.flowCap > 0,"positive RF target did not engage generation")
+t.lastWrittenSteamCap = -1
+t:updateControl(cfg,true,{rfTarget=5000,flowTarget=1500,maxFlow=120,rpmLimit=2400},{})
+assert(fake.flowCap <= 120,"dispatch max-flow limit did not cap turbine actuation")
 t:updateControl(cfg,true,{rfTarget=0,flowTarget=0,rpmLimit=2400},{storageFull=true})
 assert(not fake.coils and fake.flowCap == 0,"full storage did not stop intentional generation")
 t.rpm,t.averageRPM=2401,2401

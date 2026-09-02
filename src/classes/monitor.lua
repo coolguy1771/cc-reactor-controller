@@ -8,6 +8,15 @@ local BTN_GAP = 1           -- gap between buttons
 local CARD_W = 25           -- outer card width (incl. border)
 local CARD_H = 13           -- outer card height (incl. border)
 local GAP = 1               -- gap between cards
+-- CC:Tweaked 4x4 advanced monitor at scale 0.5 is 79x52; verbose labels overflow it.
+local COMPACT_WIDTH = 120
+local SHORT_LABELS = {
+    Auto = "Auto", Rctrs = "Reactors", Turbs = "Turbines", Fly = "Flywheel",
+    Opt = "Optimize", Calib = "Calibrate", Prev = "Prev", Next = "Next",
+    View = "View", Ack = "Ack", Reset = "Reset",
+    ["RPM-"] = "RPM-", ["RPM+"] = "RPM+", ["Buf-"] = "Buf-", ["Buf+"] = "Buf+",
+    ["Coil-"] = "Coil-", ["Coil+"] = "Coil+", ["Tick-"] = "Tick-", ["Tick+"] = "Tick+",
+}
 
 local function clamp(v, lo, hi)
     if v < lo then return lo end
@@ -310,12 +319,20 @@ local function drawHeader(mon, width, page, pages)
     end
 
     -- Verbose current-settings line (the bordered +/- buttons below change these).
-    local settings = string.format(
-        "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%% (+%d RPM)    Interval %d tick    Optimize: %s",
-        cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
-        cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
-        cfg.coilsRpmHeadroom or 100,
-        cfg.controlIntervalTicks or 1, cfg.optimizeMode == "efficiency" and "Efficiency" or "Output")
+    local opt = cfg.optimizeMode == "efficiency" and "Efficiency" or "Output"
+    local settings
+    if width < COMPACT_WIDTH then
+        settings = string.format("RPM %d-%d  Buf %d-%d%%  Coil %d-%d%%  Int %d  %s",
+            cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
+            cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
+            cfg.controlIntervalTicks or 1, opt)
+    else
+        settings = string.format(
+            "RPM band %d-%d    Buffer band %d-%d%%    Coil band %d-%d%% (+%d RPM)    Interval %d tick    Optimize: %s",
+            cfg.rpmMin or cfg.idleRPM, cfg.rpmMax or cfg.ceilingRPM,
+            cfg.bufferMin, cfg.bufferMax, cfg.coilsOnBelowPct, cfg.coilsOffAbovePct,
+            cfg.coilsRpmHeadroom or 100, cfg.controlIntervalTicks or 1, opt)
+    end
     drawText(mon, truncate(settings, width - 2), 2, 4, colors.gray, colors.white)
 
     local alarmCount, worst = AlarmManager and AlarmManager.summary() or 0, nil
@@ -499,14 +516,15 @@ local Monitor = {
                 x = 1
                 y = y + BTN_H + BTN_GAP
             else
-                local w = #spec.label + 4      -- 1 border + 1 pad on each side of the label
+                local text = (width < COMPACT_WIDTH and SHORT_LABELS[spec.name]) or spec.label
+                local w = #text + 4      -- 1 border + 1 pad on each side of the label
                 if x > 1 and (x + w - 1) > width then
                     x = 1
                     y = y + BTN_H + BTN_GAP
                 end
                 local x2, y2 = x + w - 1, y + BTN_H - 1
                 if x2 <= width and y2 <= self.size.y then
-                    local label = buttonLabel(spec.name, spec.label, w, BTN_H)
+                    local label = buttonLabel(spec.name, text, w, BTN_H)
                     local ok = pcall(function()
                         self.touch:add(label, spec.func, x, y, x2, y2, spec.off, spec.on)
                     end)

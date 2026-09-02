@@ -84,6 +84,22 @@ local function configuredCapacity(id, key, fallback)
     return math.max(1, fallback or 1)
 end
 
+local function positiveFinite(value, fallback)
+    if type(value) == "number" and value > 0 and value == value
+        and value < math.huge then return value end
+    return fallback
+end
+
+local function dispatchWeight(id)
+    return positiveFinite(getEntitySetting and getEntitySetting(id, "dispatchWeight"), 1)
+end
+
+local function dispatchFlowLimit(id, physicalLimit)
+    physicalLimit = math.max(0, physicalLimit or 0)
+    return math.min(physicalLimit, positiveFinite(
+        getEntitySetting and getEntitySetting(id, "maxFlowPerTick"), physicalLimit))
+end
+
 -- The device wrappers cache their own batteries during sampling.  Keep those snapshots in the
 -- storage model, but do not wrap them again as EnergyBuffer peripherals (which double-counts).
 local function buildStorageSources()
@@ -117,7 +133,8 @@ local function buildDispatchInput(storage)
         reactors=previousReactors, turbines=previousTurbines,
     }, passiveReactors={}, activeReactors={}, turbines={}, steamGroups=_G.overallStats.steamGroups or {} }
     for id, reactor in pairs(_G.reactors) do
-        local descriptor = { id=id, groupId=reactor.groupId or "default", available=not unavailableDevices[id] }
+        local descriptor = { id=id, groupId=reactor.groupId or "default", available=not unavailableDevices[id],
+            weight=dispatchWeight(id) }
         if reactor.activelyCooled then
             descriptor.capacity = configuredCapacity(id, "maxSteamPerTick", math.max(reactor.capacitySteam or 1,
                 reactor.averageSteamProductionRate or 0, reactor.steamProductionRate or 0))
@@ -133,9 +150,10 @@ local function buildDispatchInput(storage)
         if type(ratio) ~= "number" or ratio <= 0 then ratio = 1 end
         input.turbines[#input.turbines + 1] = {
             id=id, groupId=turbine.groupId or "default", available=not unavailableDevices[id],
+            weight=dispatchWeight(id),
             capacity=configuredCapacity(id, "maxRFPerTick", math.max(turbine.capacityRF or 1,
                 turbine.averageEnergyProduced or 0, turbine.energyProduced or 0, (turbine.flowMaxMax or 0) * ratio)),
-            maxFlow=turbine.flowMaxMax or 0, rfPerSteam=ratio,
+            maxFlow=dispatchFlowLimit(id, turbine.flowMaxMax), rfPerSteam=ratio,
         }
     end
     -- Until active-reactor capacity learning has a settled observation, do not let a low

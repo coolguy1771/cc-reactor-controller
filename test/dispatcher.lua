@@ -20,6 +20,22 @@ local turbineStable = Dispatcher.allocate({requiredRF=99,previousTargets={reacto
   passiveReactors={},turbines={{id="t1",capacity=100,maxFlow=2000,rfPerSteam=0.05,groupId="g",available=true}},activeReactors={},steamGroups={}}, {})
 assert(turbineStable.turbines.t1.rfTarget==100 and turbineStable.turbines.t1.flowTarget==2000, "turbine deadband did not retain RF/flow")
 assert(steam.turbines.t1.rpmLimit==2400, "default RPM limit missing")
+local weighted = Dispatcher.allocate({requiredRF=160, passiveReactors={
+  {id="base",capacity=100,weight=1,available=true}, {id="preferred",capacity=100,weight=3,available=true},
+}, turbines={}, activeReactors={}, steamGroups={}}, {})
+assert(weighted.reactors.base.target == 40 and weighted.reactors.preferred.target == 120,
+  "dispatch weight did not change passive reactor relative share")
+local weightedSteam = Dispatcher.allocate({requiredRF=100, passiveReactors={},
+  turbines={{id="steam-turbine",capacity=100,maxFlow=100,rfPerSteam=1,groupId="g",available=true}},
+  activeReactors={{id="steam-base",capacity=100,weight=1,groupId="g",available=true},
+    {id="steam-preferred",capacity=100,weight=3,groupId="g",available=true}}, steamGroups={g={steamCorrection=0}}}, {})
+assert(weightedSteam.reactors["steam-base"].target == 25
+  and weightedSteam.reactors["steam-preferred"].target == 75,
+  "dispatch weight did not change active steam reactor relative share")
+local cappedFlow = Dispatcher.allocate({requiredRF=200, passiveReactors={},
+  turbines={{id="capped",capacity=200,maxFlow=40,rfPerSteam=1,available=true}}, activeReactors={},steamGroups={}}, {})
+assert(cappedFlow.turbines.capped.flowTarget == 40 and cappedFlow.turbines.capped.maxFlow == 40,
+  "configured turbine flow limit did not cap the dispatch target")
 local learned=Dispatcher.learnCapacity({value=80,known=true,misses=0},{actual=100,target=100,ceiling=200,steady=true,transient=false},{capacityLearningRate=0.05})
 assert(math.abs(learned.value-81)<0.001)
 local configured=Dispatcher.learnCapacity(nil,{configured=500,actual=10,target=10,steady=true},{capacityLearningRate=0.05})

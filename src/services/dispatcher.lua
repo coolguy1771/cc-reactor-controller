@@ -32,7 +32,8 @@ function Dispatcher.allocate(input, config)
       local oldrf = type(old)=="table" and old.rfTarget or old
       rf = deadband(rf, oldrf, d.capacity or 0, threshold)
       local flow = d.rfPerSteam and math.min(d.maxFlow, rf / d.rfPerSteam) or 0
-      turbines[d.id] = {rfTarget=rf, flowTarget=flow, rpmLimit=config.sustainedOverspeedLimitRPM or 2400}
+      turbines[d.id] = {rfTarget=rf, flowTarget=flow, maxFlow=d.maxFlow,
+        rpmLimit=config.sustainedOverspeedLimitRPM or 2400}
     else
       local old = previous.reactors and previous.reactors[d.id]
       reactors[d.id] = {unit="rf", target=deadband(raw, old, d.capacity or 0, threshold)}
@@ -47,10 +48,10 @@ function Dispatcher.allocate(input, config)
   for _, d in ipairs(input.activeReactors or {}) do if available(d) then
     local group = d.groupId; local demand=math.max(0, groups[group] or 0)
     local members={}; for _, x in ipairs(input.activeReactors or {}) do if available(x) and x.groupId==group then members[#members+1]=x end end
-    local sum=0; for _, x in ipairs(members) do sum=sum+math.max(0,x.capacity or 0) end
+    local sum=0; for _, x in ipairs(members) do sum=sum+cap(x) end
     local util=sum>0 and math.min(1,demand/sum) or 0
-    local raw=math.max(0,d.capacity or 0)*util; local old=previous.reactors and previous.reactors[d.id]
-    reactors[d.id]={unit="steam",target=deadband(raw,old,d.capacity or 0,threshold)}
+    local capacity=cap(d); local raw=capacity*util; local old=previous.reactors and previous.reactors[d.id]
+    reactors[d.id]={unit="steam",target=deadband(raw,old,capacity,threshold)}
   end end
   return {reactors=reactors,turbines=turbines,requiredRF=required,availableRF=total,saturation=total>0 and required/total or 0}
 end

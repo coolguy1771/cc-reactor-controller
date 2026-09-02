@@ -248,7 +248,8 @@ local Turbine = {
         end
         self.desiredCoils = true
         local ok, err = self:writeCoils(true); if not ok then return false, err end
-        local desiredFlow = clamp(target.flowTarget or 0, 0, self.flowMaxMax)
+        local maxDispatchFlow = clamp(finiteLimit(target.maxFlow, self.flowMaxMax), 0, self.flowMaxMax)
+        local desiredFlow = clamp(target.flowTarget or 0, 0, maxDispatchFlow)
         local storageBelowTarget = self.energyCapacity <= 0 or self.energyStored < self.energyCapacity * 0.9
         local probeEligible = context.probeAllowed and not self.probeStopped and storageBelowTarget and desiredFlow >= self.flowMaxMax and config.sustainedOverspeedEnabled ~= false and context.steady and not context.transient and not context.governorBraking and not context.flywheelDeceleration and not context.storageFull
         if probeEligible and not self.probeBin then
@@ -256,10 +257,10 @@ local Turbine = {
         end
         local targetRPM = math.min(self.probeBin or (self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin), absoluteLimit - 10)
         local dispatchErr = rpmBandError(avgRpm, targetRPM, targetRPM)
-        self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, self.flowMaxMax)
-        ok, err = self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, self.flowMaxMax)); if not ok then return false, err end
+        self.pid.integral = clamp(self.pid.integral + (config.turbineKi or 0) * dispatchErr, 0, maxDispatchFlow)
+        ok, err = self:writeSteam(clamp(desiredFlow + (config.turbineKp or 0) * dispatchErr, 0, maxDispatchFlow)); if not ok then return false, err end
         self.controlStatus = "dispatch"
-        local saturated = desiredFlow >= self.flowMaxMax
+        local saturated = desiredFlow >= maxDispatchFlow
         if probeEligible then
             self.probeBin = self.probeBin or math.min((self.bestSustainedRPM > 0 and self.bestSustainedRPM or rpmMin) + 100, absoluteLimit - 10)
             self.probeSettledBins = self.probeSettledBins or {}
